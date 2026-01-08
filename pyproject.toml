@@ -3,13 +3,15 @@ requires = ["setuptools>=67", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "predict-akur8"
+name = "predict_akur8"
 version = "0.1.0"
 description = "Akur8 model scorer with look-up table interpolation."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["pandas", "numpy", "scipy", "flatten_dict"]
 
+[tool.setuptools]
+package-dir = {"" = "src"}
+
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["predict_akur8"]
+where = ["src"]
