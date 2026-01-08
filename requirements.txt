@@ -2,4 +2,3 @@ pandas
 flatten_dict
 scipy
 numpy
-pickle
