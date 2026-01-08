@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Akur8 model scorer with look-up table interpolation."
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["pandas", "numpy", "scipy", "flatten_dict", "pickle"]
+dependencies = ["pandas", "numpy", "scipy", "flatten_dict"]
 
 [tool.setuptools.packages.find]
 where = ["."]
