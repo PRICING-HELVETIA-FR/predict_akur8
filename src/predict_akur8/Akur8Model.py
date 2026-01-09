@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from flatten_dict import flatten
 from scipy.special import expit
+from pandas.api.types import is_numeric_dtype
 
 from .numpy_luts import NumpyCatCatLut, NumpyCatNumLut, NumpyNumLut, NumpyNumNumLut, NumpyCatLut, NumpyLut
 from .utils import complete_lut, is_float_key, DELIM_MODEL_VARS, DELIM_VARS_INTER, compress_value1_interaction, compress_simple_lut, get_unique_values
@@ -24,11 +25,11 @@ class Akur8Model:
     intercept: float
     model_name: str
     interpolate: bool
-    simple_pandas_luts: dict[str, pd.DataFrame] | None
-    inter_pandas_luts: dict[tuple[str, str], pd.DataFrame] | None
     var_is_numeric: dict[str, bool]
-    simple_numpy_luts: dict[str, NumpyLut] | None
-    inter_numpy_luts: dict[tuple[str, str], NumpyLut] | None
+    simple_luts: dict[str, NumpyLut] | None
+    inter_luts: dict[tuple[str, str], NumpyLut] | None
+    __simple_pandas_luts: dict[str, pd.DataFrame] | None
+    __inter_pandas_luts: dict[tuple[str, str], pd.DataFrame] | None
 
     def __init__(
         self,
@@ -54,11 +55,13 @@ class Akur8Model:
         self.model_name = model_name if model_name is not None else model_json['projectName']
 
         # Parse JSON to flat tables
-        self.simple_pandas_luts = self.__parse_simple_df(model_json)   # var, mod, coef
-        self.inter_pandas_luts = self.__parse_inter_df(model_json)    # var1, var2, m1, m2, coef
+        self.__simple_pandas_luts = self.__parse_simple_df(model_json)   # var, mod, coef
+        self.__inter_pandas_luts = self.__parse_inter_df(model_json)    # var1, var2, m1, m2, coef
         
-        self.__infer_var_types(train_df)
-        self.__complete_luts(train_df)
+        train_df_copy = train_df.copy() if train_df is not None else None
+        
+        self.__infer_var_types(train_df_copy)
+        self.__complete_luts(train_df_copy)
         self.__calculate_interpolators(interpolate)
         self.__compress_luts(compress_look_up_tables)
         self.__luts_to_numpy()
@@ -73,18 +76,26 @@ class Akur8Model:
         if not compress_look_up_tables:
             return
         
+        # When a variable is only used in interactions, Akur8 creates a simple LUT with all betas = 0. 
+        # We remove these LUTs to avoid useless computations at scoring.
+        to_delete = [var for var in self.__simple_pandas_luts.keys() if self.__simple_pandas_luts[var]['beta'].eq(0).all()]
+        for var in to_delete:
+            del self.__simple_pandas_luts[var]
+        
+        # Compressing numeric LUTs by removing intermediates points in beta plateaus
         for var in self.simple_numeric:
-            self.simple_pandas_luts[var] = compress_simple_lut(self.simple_pandas_luts[var])
+            self.__simple_pandas_luts[var] = compress_simple_lut(self.__simple_pandas_luts[var])
             
+        # Same for interactions
         for var1, var2 in self.inter_numeric:
             # Compressing first var
-            lut = compress_value1_interaction(self.inter_pandas_luts[(var1, var2)], var1, var2)
+            lut = compress_value1_interaction(self.__inter_pandas_luts[(var1, var2)], var1, var2)
             # Compressing each sub table along second var
             subluts_compressed = list()
             for _, sublut in lut.groupby(var1, as_index=False, dropna=False):
                 subluts_compressed.append(compress_simple_lut(sublut))
                 
-            self.inter_pandas_luts[(var1, var2)] = pd.concat(subluts_compressed)
+            self.__inter_pandas_luts[(var1, var2)] = pd.concat(subluts_compressed)
     
     
     def __complete_luts(self, train_df: pd.DataFrame):
@@ -98,13 +109,13 @@ class Akur8Model:
         
         # Simples effects
         for var in self.simple_numeric:
-            lut = self.simple_pandas_luts[var]       
+            lut = self.__simple_pandas_luts[var]       
             train_unique_values = get_unique_values(train_df, lut, var)
-            self.simple_pandas_luts[var] = complete_lut(train_unique_values, lut, var)
+            self.__simple_pandas_luts[var] = complete_lut(train_unique_values, lut, var)
         
         # Interactions
         for var1, var2 in self.inter_numeric:
-            lut = self.inter_pandas_luts[(var1, var2)]
+            lut = self.__inter_pandas_luts[(var1, var2)]
             train_unique_values = get_unique_values(train_df, lut, var2)
             sublut_completed_list = list()
 
@@ -112,7 +123,7 @@ class Akur8Model:
                 sublut_completed = complete_lut(train_unique_values, sublut, var2)
                 sublut_completed_list.append(sublut_completed)
                 
-            self.inter_pandas_luts[(var1, var2)] = pd.concat(sublut_completed_list)
+            self.__inter_pandas_luts[(var1, var2)] = pd.concat(sublut_completed_list)
             
         
     def __parse_simple_df(self, model_json: dict[str, object]) -> dict[str, pd.Series]:
@@ -159,7 +170,7 @@ class Akur8Model:
         }
     
     
-    def cast_to_num(self, lut: pd.DataFrame, var: str, train_df: pd.DataFrame):
+    def cast_luts(self, lut: pd.DataFrame, var: str, train_df: pd.DataFrame):
         """Cast a LUT variable to numeric, matching train_df dtype when provided.
 
         Args:
@@ -168,13 +179,19 @@ class Akur8Model:
             train_df: Training dataframe for dtype matching.
         """
         if self.var_is_numeric[var]:
-            lut[var] = pd.to_numeric(lut[var].str.replace(',', '.'))
-            if train_df is not None:
-                # When train_df is provided, we cast lut[var] in the same type as train_df[var] so merge_asof can work 
-                lut[var] = lut[var].astype(train_df[var].dtype)
+            cast_fun = lambda x: pd.to_numeric(x.fillna('').astype(str).str.replace(',', '.')).astype(float)
+        else:
+            # Replace NaN by '' for categorical variables before casting to avoid 'NaN' or 'None' strings
+            cast_fun = lambda x: x.fillna('').astype(str)
+            
+        lut[var] = cast_fun(lut[var])
+        if train_df is not None:
+            # When train_df is provided, we cast train_df[var] in the same type as lut[var] to allow lookups 
+            train_df[var] = cast_fun(train_df[var])
+            
         
         
-    def __infer_var_types(self, train_df) -> dict[str, bool]:
+    def __infer_var_types(self, train_df: pd.DataFrame) -> dict[str, bool]:
         """Infer variable numeric types and normalize LUT ordering.
 
         Args:
@@ -185,17 +202,17 @@ class Akur8Model:
         else:
             self.var_is_numeric = self.__infer_var_types_from_train_df(train_df)
         
-        for var, lut in self.simple_pandas_luts.items():
-            self.cast_to_num(lut, var, train_df)
+        for var, lut in self.__simple_pandas_luts.items():
+            self.cast_luts(lut, var, train_df)
             # Sort to accelerate future beta look ups
             lut.sort_values(by=[var], inplace=True)
         
         df_for_unique_count = train_df if train_df is not None else lut
         
         a_permuter = list()
-        for (var1, var2), lut in self.inter_pandas_luts.items():
-            self.cast_to_num(lut, var1, train_df)
-            self.cast_to_num(lut, var2, train_df)
+        for (var1, var2), lut in self.__inter_pandas_luts.items():
+            self.cast_luts(lut, var1, train_df)
+            self.cast_luts(lut, var2, train_df)
             is_num_var1 = self.var_is_numeric[var1]
             is_num_var2 = self.var_is_numeric[var2]
             # Permutation if we are in one of the following situations :
@@ -209,29 +226,29 @@ class Akur8Model:
                 a_permuter.append((var1, var2))
                 
         for var1, var2 in a_permuter:
-            lut = self.inter_pandas_luts.pop((var1, var2))
-            self.inter_pandas_luts[(var2, var1)] = (
+            lut = self.__inter_pandas_luts.pop((var1, var2))
+            self.__inter_pandas_luts[(var2, var1)] = (
                 lut[[var2, var1, lut.columns[2]]]
                 .sort_values(by=[var2, var1])
             )
             
         # Sort to accelerate future beta look ups
-        for (var1, var2), lut in self.inter_pandas_luts.items():
+        for (var1, var2), lut in self.__inter_pandas_luts.items():
             lut.sort_values(by=[var1, var2], inplace=True)
             
-        self.simple_numeric = [var for var in self.simple_pandas_luts.keys() if self.var_is_numeric[var]]
+        self.simple_numeric = [var for var in self.__simple_pandas_luts.keys() if self.var_is_numeric[var]]
         # Interactions whose second feature is numeric
-        self.inter_numeric = [(var1, var2) for var1, var2 in self.inter_pandas_luts.keys() if self.var_is_numeric[var2]]
+        self.inter_numeric = [(var1, var2) for var1, var2 in self.__inter_pandas_luts.keys() if self.var_is_numeric[var2]]
             
 
     def __infer_var_types_from_json(self) -> dict[str, bool]:
         """Infer numeric types by checking if all values parse as floats."""
         values_by_variable: dict[str, set[str]] = {}
         
-        for var, lut in self.simple_pandas_luts.items():
+        for var, lut in self.__simple_pandas_luts.items():
             values_by_variable[var] = set(lut.reset_index()[var].unique())
             
-        for (var1, var2), lut in self.inter_pandas_luts.items():
+        for (var1, var2), lut in self.__inter_pandas_luts.items():
             temp = lut.reset_index()
             valeurs_var1 = values_by_variable.get(var1, set())
             valeurs_var1 = valeurs_var1.union(temp[var1].unique())
@@ -249,13 +266,23 @@ class Akur8Model:
         Args:
             train_df: Training dataframe to inspect.
         """
-        variables = set(self.simple_pandas_luts.keys())
-        variables = variables.union(t[0] for t in self.inter_pandas_luts.keys())
-        variables = variables.union(t[1] for t in self.inter_pandas_luts.keys())
+        variables = set(self.__simple_pandas_luts.keys())
+        variables = variables.union(t[0] for t in self.__inter_pandas_luts.keys())
+        variables = variables.union(t[1] for t in self.__inter_pandas_luts.keys())
         
-        numeric = train_df[list(variables)].select_dtypes(include=np.number)
+        res = dict()
         
-        return {variable: variable in numeric for variable in variables}
+        for variable in variables:
+            is_numeric = is_numeric_dtype(train_df[variable])
+            if not is_numeric:
+                try:
+                    _ = pd.to_numeric(train_df[variable].dropna().unique(), errors='raise')
+                    is_numeric = True
+                except:
+                    is_numeric = False
+            res[variable] = is_numeric
+
+        return res
     
     
     def __calculate_interpolators(self, interpolate: bool):
@@ -270,18 +297,18 @@ class Akur8Model:
         
         # Effets simples
         for var in self.simple_numeric:
-            self.simple_pandas_luts[var] = self.__calculate_interpolators_for_var(self.simple_pandas_luts[var], var)
+            self.__simple_pandas_luts[var] = self.__calculate_interpolators_for_var(self.__simple_pandas_luts[var], var)
             
         # Interactions
         for var1, var2 in self.inter_numeric:
-            lut = self.inter_pandas_luts[(var1, var2)]
+            lut = self.__inter_pandas_luts[(var1, var2)]
             
             sublut_list = list()
             for val1, sublut in lut.groupby(var1, as_index=False, dropna=False):
                 temp = self.__calculate_interpolators_for_var(sublut, var2)
                 sublut_list.append(temp)
                 
-            self.inter_pandas_luts[(var1, var2)] = pd.concat(sublut_list)
+            self.__inter_pandas_luts[(var1, var2)] = pd.concat(sublut_list)
     
     
     def __calculate_interpolators_for_var(self, lut: pd.DataFrame, var: str) -> pd.DataFrame:
@@ -322,36 +349,36 @@ class Akur8Model:
     
     def __luts_to_numpy(self):
         """Convert pandas LUTs into numpy-optimized LUT classes."""
-        self.simple_numpy_luts = dict()
-        self.inter_numpy_luts = dict()
+        self.simple_luts = dict()
+        self.inter_luts = dict()
         
         # Simple effects
-        for var, lut in self.simple_pandas_luts.items():
+        for var, lut in self.__simple_pandas_luts.items():
             # Num
             if self.var_is_numeric[var]:
-                self.simple_numpy_luts[var] = NumpyNumLut(lut, var)
+                self.simple_luts[var] = NumpyNumLut(lut, var)
             # Cat
             else:
-                self.simple_numpy_luts[var] = NumpyCatLut(lut, var)
+                self.simple_luts[var] = NumpyCatLut(lut, var)
                 
-        self.simple_pandas_luts = None
+        self.__simple_pandas_luts = None
                 
         # Interactions
-        for (var1, var2), lut in self.inter_pandas_luts.items():
+        for (var1, var2), lut in self.__inter_pandas_luts.items():
             is_num_1 = self.var_is_numeric[var1]
             is_num_2 = self.var_is_numeric[var2]
             key = (var1, var2)
             # Num x Num
             if is_num_1 and is_num_2:
-                self.inter_numpy_luts[key] = NumpyNumNumLut(lut, var1, var2)
+                self.inter_luts[key] = NumpyNumNumLut(lut, var1, var2)
             # Cat x Num
             if not is_num_1 and is_num_2:
-                self.inter_numpy_luts[key] = NumpyCatNumLut(lut, var1, var2) 
+                self.inter_luts[key] = NumpyCatNumLut(lut, var1, var2) 
             # Cat x Cat
             if not is_num_1 and not is_num_2:
-                self.inter_numpy_luts[key] = NumpyCatCatLut(lut, var1, var2)
+                self.inter_luts[key] = NumpyCatCatLut(lut, var1, var2)
                 
-        self.inter_pandas_luts = None
+        self.__inter_pandas_luts = None
         
         
     def __check_interpolation_method(self, interpolation: str, var: str):
@@ -381,26 +408,24 @@ class Akur8Model:
             interpolation_inter: Per-interaction interpolation overrides.
         """
         
-        values_cache: dict[str, pd.Series] = {
-            '__numeric_cols__': set(df.select_dtypes(include=np.number).columns)
-        }
+        values_cache = dict()
         out = pd.DataFrame(index=df.index)
         col_intercept = f'{self.model_name}::intercept'
         out[col_intercept] = self.intercept
         cols_to_sum = [col_intercept]
         
-        for var, lut in self.simple_numpy_luts.items():
+        for var, lut in self.simple_luts.items():
             coef_column = self.__get_col_coef_name(var)
             interpolation = interpolation_simple.get(var, default_interpolation)
             self.__check_interpolation_method(interpolation, var)
-            out[coef_column] = lut.compute_betas(df, interpolation=interpolation, values_cache=values_cache)
+            out[coef_column] = lut.compute_betas(df, values_cache, interpolation)
             cols_to_sum.append(coef_column)
             
-        for (var1, var2), lut in self.inter_numpy_luts.items():
+        for (var1, var2), lut in self.inter_luts.items():
             coef_column = self.__get_col_coef_name(var1, var2)
             interpolation = interpolation_inter.get((var1, var2), default_interpolation)
             self.__check_interpolation_method(interpolation, var2)
-            out[coef_column] = lut.compute_betas(df, interpolation=interpolation, values_cache=values_cache)
+            out[coef_column] = lut.compute_betas(df, values_cache, interpolation)
             cols_to_sum.append(coef_column)
             
         col_prediction = f'{self.model_name}::prediction'

@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from abc import ABC, abstractmethod
 from typing import TypeVar, Type
+from pandas.api.types import is_numeric_dtype
 
 T = TypeVar("NumpyLut")
 
@@ -16,7 +17,7 @@ def _fill_by_grouped_keys(
     values_var2: pd.Series,
     df: pd.DataFrame,
     interpolation: str,
-    values_cache: dict[str, pd.Series] | None = None,
+    values_cache: dict[str, pd.Series],
     skip_key=None
 ) -> None:
     """Fill interpolated betas by grouped keys with stable ordering.
@@ -45,12 +46,13 @@ def _fill_by_grouped_keys(
             continue
         sub_positions = row_positions[order[start:end]]
         lut = get_lut(key)
-        interpolated_betas[sub_positions] = lut._compute_betas(
-            values_var2.iloc[sub_positions],
-            df.iloc[sub_positions],
-            interpolation,
-            values_cache
-        )
+        if lut is not None:
+            interpolated_betas[sub_positions] = lut._compute_betas(
+                values_var2.iloc[sub_positions],
+                df.iloc[sub_positions],
+                values_cache,
+                interpolation
+            )
 
 
 class NumpyLut(ABC):
@@ -62,13 +64,14 @@ class NumpyLut(ABC):
             lut: Lookup table dataframe.
             var: Variable name for this LUT.
         """
-        self.values_type = lut[var].dtype
         self.var_name = var
+        self.values_type = lut[var].dtype
+        self.is_numeric = is_numeric_dtype(lut[var])
         
     def _get_values_to_search(
         self,
         df: pd.DataFrame,
-        values_cache: dict[str, pd.Series] | None = None
+        values_cache: dict[str, pd.Series]
     ) -> pd.Series:
         """Fetch and normalize the input series for this LUT.
 
@@ -76,12 +79,11 @@ class NumpyLut(ABC):
             df: Input dataframe.
             values_cache: Optional cache of precomputed series.
         """
-        if values_cache is not None:
-            cached = values_cache.get(self.var_name)
-            if cached is not None:
-                if cached.index is df.index:
-                    return cached
-                return cached.reindex(df.index)
+        cached = values_cache.get(self.var_name)
+        if cached is not None:
+            if cached.index is df.index:
+                return cached
+            return cached.reindex(df.index)
 
         try:
             values_to_search = df[self.var_name]
@@ -89,32 +91,25 @@ class NumpyLut(ABC):
             raise Exception(f'The dataframe to predict does not include a column named {self.var_name}')
         
         try:
-            res = values_to_search.astype(self.values_type, copy=False)
+            if self.is_numeric:
+                res = pd.to_numeric(values_to_search, errors='raise').astype(self.values_type).astype(float)
+                values_type = 'float'
+            else:
+                res = values_to_search.fillna('').astype(self.values_type).astype(str)
+                values_type = 'str'
         except:
-            raise Exception(f'In the dataframe to predict, the column {self.var_name} of must have a type that can be casted to {self.values_type}')
-        
-        # For categorical variables, replace missing values with "" so the coefficient can be found
-        if values_cache is not None:
-            numeric_cols = values_cache.get('__numeric_cols__')
-        else:
-            numeric_cols = None
-        if numeric_cols is None:
-            numeric_cols = set(df.select_dtypes(include=np.number).columns)
-            if values_cache is not None:
-                values_cache['__numeric_cols__'] = numeric_cols
-        if self.var_name not in numeric_cols:
-            res = res.fillna('')
+            raise Exception(f'In the dataframe to predict, the column {self.var_name} of must have a type that can be casted to {values_type}')
             
-        if values_cache is not None:
-            values_cache[self.var_name] = res
+        values_cache[self.var_name] = res
+        
         return res
         
     
     def compute_betas(
         self,
         df: pd.DataFrame,
-        interpolation: str='pchip',
-        values_cache: dict[str, pd.Series] | None = None
+        values_cache: dict[str, pd.Series],
+        interpolation: str='pchip'
     ) -> float:
         """Compute betas for the dataframe using the given interpolation.
 
@@ -124,7 +119,7 @@ class NumpyLut(ABC):
             values_cache: Optional cache of precomputed series.
         """
         values_to_search = self._get_values_to_search(df, values_cache)
-        return self._compute_betas(values_to_search, df, interpolation, values_cache)
+        return self._compute_betas(values_to_search, df, values_cache, interpolation)
     
     
     @abstractmethod
@@ -132,8 +127,8 @@ class NumpyLut(ABC):
         self,
         values_to_search: pd.Series,
         df: pd.DataFrame,
-        interpolation: str='pchip',
-        values_cache: dict[str, pd.Series] | None = None
+        values_cache: dict[str, pd.Series],
+        interpolation: str='pchip'
     ) -> float:
         """Core beta computation for a prepared series.
 
@@ -212,8 +207,8 @@ class NumpyNumLut(NumpyNumLutAbstract):
         self,
         values_to_search: pd.Series,
         df: pd.DataFrame,
-        interpolation: str='pchip',
-        values_cache: dict[str, pd.Series] | None = None
+        values_cache: dict[str, pd.Series],
+        interpolation: str='pchip'
     ) -> pd.Series:
         """Compute interpolated betas for numeric inputs.
 
@@ -269,8 +264,8 @@ class NumpyCatLut(NumpyLut):
         self,
         values_to_search: pd.Series,
         df: pd.DataFrame,
-        interpolation: str='pchip',
-        values_cache: dict[str, pd.Series] | None = None
+        values_cache: dict[str, pd.Series],
+        interpolation: str='pchip'
     ) -> pd.Series:
         """Map categories to betas.
 
@@ -306,8 +301,8 @@ class NumpyNumNumLut(NumpyNumLutAbstract):
         self,
         values_to_search: pd.Series,
         df: pd.DataFrame,
-        interpolation: str='pchip',
-        values_cache: dict[str, pd.Series] | None = None
+        values_cache: dict[str, pd.Series],
+        interpolation: str='pchip'
     ) -> pd.Series:
         """Compute betas for numeric x numeric interactions.
 
@@ -327,8 +322,8 @@ class NumpyNumNumLut(NumpyNumLutAbstract):
             interpolated_betas[row_positions] = self.empty_betas._compute_betas(
                 values_var2.iloc[row_positions],
                 df.iloc[row_positions],
-                interpolation,
-                values_cache
+                values_cache,
+                interpolation
             )
         # When the first interaction variable is present, look up the nearest value
         mask_not_nan = ~mask_nan
@@ -374,8 +369,8 @@ class NumpyInterLut(NumpyLut):
         self,
         values_to_search: pd.Series,
         df: pd.DataFrame,
-        interpolation: str='pchip',
-        values_cache: dict[str, pd.Series] | None = None
+        values_cache: dict[str, pd.Series],
+        interpolation: str='pchip'
     ) -> pd.Series:
         """Compute betas for interaction LUTs via grouped lookup.
 
@@ -397,7 +392,7 @@ class NumpyInterLut(NumpyLut):
             interpolated_betas,
             row_positions,
             codes,
-            lambda code: self.numpy_subluts[uniques[code]],
+            lambda code: self.numpy_subluts.get(uniques[code]),
             values_var2,
             df,
             interpolation,
