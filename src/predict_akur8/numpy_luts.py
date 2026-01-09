@@ -290,7 +290,10 @@ class NumpyNumNumLut(NumpyNumLutAbstract):
         """
         super().__init__(lut, var1)
         mask_nan = lut[var1].isna()
-        self.empty_betas = NumpyNumLut(lut[mask_nan], var2)
+        if not np.any(mask_nan):
+            self.empty_betas = None
+        else:
+            self.empty_betas = NumpyNumLut(lut[mask_nan], var2)
         self.numpy_num_luts = [
             NumpyNumLut(sublut, var2) 
             for val1, sublut in lut[~mask_nan].groupby(var1, as_index=False, dropna=False)
@@ -315,9 +318,9 @@ class NumpyNumNumLut(NumpyNumLutAbstract):
         mask_nan = values_to_search.isna()
         # Initialize betas vector to NaN
         interpolated_betas = np.full(values_to_search.shape, np.nan, dtype=np.float64)
-        values_var2 = self.empty_betas._get_values_to_search(df, values_cache)
         # When the first interaction variable is missing, compute betas with the associated sub-table
-        if np.any(mask_nan):
+        if np.any(mask_nan) and self.empty_betas is not None:
+            values_var2 = self.empty_betas._get_values_to_search(df, values_cache)
             row_positions = np.flatnonzero(mask_nan.to_numpy())
             interpolated_betas[row_positions] = self.empty_betas._compute_betas(
                 values_var2.iloc[row_positions],
@@ -328,6 +331,7 @@ class NumpyNumNumLut(NumpyNumLutAbstract):
         # When the first interaction variable is present, look up the nearest value
         mask_not_nan = ~mask_nan
         if np.any(mask_not_nan):
+            values_var2 = self.numpy_num_luts[0]._get_values_to_search(df, values_cache)
             row_positions = np.flatnonzero(mask_not_nan.to_numpy())
             values_not_nan = values_to_search.to_numpy()[row_positions]
             idxs = self.nearest_index(values_not_nan)
