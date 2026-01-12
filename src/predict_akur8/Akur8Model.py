@@ -10,7 +10,7 @@ from .numpy_luts import NumpyCatCatLut, NumpyCatNumLut, NumpyNumLut, NumpyNumNum
 from .utils import complete_lut, is_float_key, DELIM_MODEL_VARS, DELIM_VARS_INTER, compress_value1_interaction, compress_simple_lut, get_unique_values
 from scipy.interpolate import PchipInterpolator
 from math import log
-from pickle import load, dump
+import pickle
 
 
 class Akur8Model:
@@ -450,10 +450,16 @@ class Akur8Model:
         
     def to_pickle(self, path: str):
         with open(path, 'wb') as f:
-            dump(self, f)
+            pickle.dump(self, f)
          
             
     @staticmethod
     def from_pickle(path: str):
         with open(path, 'rb') as f:
-            return load(f)
+            # Allow loading pickles created from "src.predict_akur8" imports.
+            class _Akur8Unpickler(pickle.Unpickler):
+                def find_class(self, module, name):
+                    if module.startswith("src."):
+                        module = module.replace("src.", "", 1)
+                    return super().find_class(module, name)
+            return _Akur8Unpickler(f).load()
