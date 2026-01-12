@@ -134,14 +134,14 @@ class Akur8Model:
         """
         flat = flatten(model_json.get('coefficients', {}))
         if not flat:
-            return None
+            return dict()
         s = pd.Series(flat).reset_index()
-        s.columns = ['var', 'mod', 'coef']
+        s.columns = ['var', 'mod', 'beta']
         s['var'] = s['var'].astype(str)
         s['mod'] = s['mod'].astype(str)
-        s['coef'] = s['coef'].astype(float)
+        s['beta'] = s['beta'].astype(float)
         if self.link == 'LOG':
-            s['beta'] = np.log(s['coef'])
+            s['beta'] = np.log(s['beta'])
         return {
             var: g[['mod', 'beta']].rename(columns={'mod': var})
             for var, g in s.groupby('var', sort=False, as_index=False, dropna=False)
@@ -156,14 +156,14 @@ class Akur8Model:
         """
         flat = flatten(model_json.get('interactionsCoefficients', {}), reducer='tuple')  # (v1,v2,m1,m2)->coef
         if not flat:
-            return None
-        s = pd.Series(flat, name='coef').reset_index()
-        s.columns = ['var1', 'var2', 'm1', 'm2', 'coef']
+            return dict()
+        s = pd.Series(flat, name='beta').reset_index()
+        s.columns = ['var1', 'var2', 'm1', 'm2', 'beta']
         for c in ['var1', 'var2', 'm1', 'm2']:
             s[c] = s[c].astype(str)
-        s['beta'] = s['coef'].astype(float)
+        s['beta'] = s['beta'].astype(float)
         if self.link == 'LOG':
-            s['beta'] = np.log(s['coef'])
+            s['beta'] = np.log(s['beta'])
         return {
             (v1, v2): g[['m1', 'm2', 'beta']].rename(columns={'m1': v1, 'm2': v2})
             for (v1, v2), g in s.groupby(['var1', 'var2'], sort=False, dropna=False)
@@ -179,7 +179,7 @@ class Akur8Model:
             train_df: Training dataframe for dtype matching.
         """
         if self.var_is_numeric[var]:
-            cast_fun = lambda x: pd.to_numeric(x.fillna('').astype(str).str.replace(',', '.')).astype(float)
+            cast_fun = lambda x: pd.to_numeric(x.fillna('').astype(str).str.replace(',', '.').replace({'': np.nan})).astype(float)
         else:
             # Replace NaN by '' for categorical variables before casting to avoid 'NaN' or 'None' strings
             cast_fun = lambda x: x.fillna('').astype(str)
@@ -207,14 +207,14 @@ class Akur8Model:
             # Sort to accelerate future beta look ups
             lut.sort_values(by=[var], inplace=True)
         
-        df_for_unique_count = train_df if train_df is not None else lut
-        
         a_permuter = list()
         for (var1, var2), lut in self.__inter_pandas_luts.items():
             self.cast_luts(lut, var1, train_df)
             self.cast_luts(lut, var2, train_df)
             is_num_var1 = self.var_is_numeric[var1]
             is_num_var2 = self.var_is_numeric[var2]
+        
+            df_for_unique_count = train_df if train_df is not None else lut
             # Permutation if we are in one of the following situations :
             # - CAT x CAT or NUM x NUM interaction and the first variable has more distinct values than the second
             # - NUM x CAT interaction: we put the CAT feature firstdevant to allow interpolations on the NUM feature
@@ -323,13 +323,20 @@ class Akur8Model:
         
         # For Piecewise Cubic Hermite Interpolating Polynomial
         mask_not_nan = lut[var].notna()
-        interpolator = PchipInterpolator(x=lut.loc[mask_not_nan, var], y=lut.loc[mask_not_nan, 'beta'])
+        x = lut.loc[mask_not_nan, var].to_numpy()
+        y = lut.loc[mask_not_nan, 'beta'].to_numpy()
+        interpolator = PchipInterpolator(x=x, y=y)
 
         coefficients_pchip = (
             pd.DataFrame(interpolator.c.transpose(), columns=['pchip3', 'pchip2', 'pchip1', 'pchip0'])
             .drop(columns=['pchip0']) # Not needed because pchip0 = var
         )
-        lut = pd.concat([lut, coefficients_pchip], axis=1)
+        lut[['pchip3', 'pchip2', 'pchip1']] = np.nan
+        positions = np.flatnonzero(mask_not_nan.to_numpy())
+        n_segments = coefficients_pchip.shape[0]
+        if n_segments > 0:
+            col_idx = [lut.columns.get_loc(c) for c in ('pchip3', 'pchip2', 'pchip1')]
+            lut.iloc[positions[:n_segments], col_idx] = coefficients_pchip.to_numpy()
         
         return lut
     
@@ -396,8 +403,8 @@ class Akur8Model:
         self, 
         df: pd.DataFrame, 
         default_interpolation: str='pchip', 
-        interpolation_simple: dict[str, str]=dict(), 
-        interpolation_inter: dict[tuple[str, str], str]=dict()
+        interpolation_simple: dict[str, str] | None = None, 
+        interpolation_inter: dict[tuple[str, str], str] | None = None
     ) -> pd.DataFrame:
         """Score a dataframe and return input with added coefficient and prediction columns.
 
@@ -408,6 +415,10 @@ class Akur8Model:
             interpolation_inter: Per-interaction interpolation overrides.
         """
         
+        if interpolation_simple is None:
+            interpolation_simple = dict()
+        if interpolation_inter is None:
+            interpolation_inter = dict()
         values_cache = dict()
         out = pd.DataFrame(index=df.index)
         col_intercept = f'{self.model_name}::intercept'
