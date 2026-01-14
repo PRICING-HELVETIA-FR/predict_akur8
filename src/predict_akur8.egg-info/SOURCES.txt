@@ -1,0 +1,12 @@
+LICENSE
+README.md
+pyproject.toml
+src/predict_akur8/Akur8Model.py
+src/predict_akur8/__init__.py
+src/predict_akur8/numpy_luts.py
+src/predict_akur8/utils.py
+src/predict_akur8.egg-info/PKG-INFO
+src/predict_akur8.egg-info/SOURCES.txt
+src/predict_akur8.egg-info/dependency_links.txt
+src/predict_akur8.egg-info/requires.txt
+src/predict_akur8.egg-info/top_level.txt
