@@ -243,7 +243,7 @@ class NumpyNumLut(NumpyNumLutAbstract):
             # where condition: exact match or out-of-bounds
             interpolated_betas[mask_not_nan] = np.where(idx_inf == idx_sup, self.betas[idx_inf], pchip)
         else:
-            raise Exception(f"La méthode d'interpolation {interpolation} est inconnue.")
+            raise Exception(f"Interpolation method {interpolation} does not exist.")
         
         return interpolated_betas
         

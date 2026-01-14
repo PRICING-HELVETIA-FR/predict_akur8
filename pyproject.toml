@@ -9,6 +9,19 @@ description = "Akur8 model scorer with look-up table interpolation."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["pandas", "numpy", "scipy", "flatten_dict"]
+license = {text = "MIT"}
+license-files = ["LICENSE"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+]
+authors = [
+  {name = "Julien Ostor", email = "julien.ostor@helvetia.fr"},
+]
+
+[project.urls]
+Repository = "https://github.com/PRICING-HELVETIA-FR/predict_akur8"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
