@@ -197,10 +197,10 @@ class NumpyNumLut(NumpyNumLutAbstract):
         temp = lut.loc[~mask_not_nan, 'beta'].values
         self.betas = lut.loc[mask_not_nan, 'beta'].to_numpy()
         self.empty_beta = temp[0] if len(temp) == 1 else np.nan
-        self.slopes = lut.loc[mask_not_nan, 'slope'].to_numpy()
-        self.pchip3 = lut.loc[mask_not_nan, 'pchip3'].to_numpy() 
-        self.pchip2 = lut.loc[mask_not_nan, 'pchip2'].to_numpy()
-        self.pchip1 = lut.loc[mask_not_nan, 'pchip1'].to_numpy()
+        self.slopes = lut.loc[mask_not_nan, 'slope'].to_numpy() if 'slope' in lut.columns else None
+        self.pchip3 = lut.loc[mask_not_nan, 'pchip3'].to_numpy() if 'pchip3' in lut.columns else None
+        self.pchip2 = lut.loc[mask_not_nan, 'pchip2'].to_numpy() if 'pchip2' in lut.columns else None
+        self.pchip1 = lut.loc[mask_not_nan, 'pchip1'].to_numpy() if 'pchip1' in lut.columns else None
         
     
     def _compute_betas(
