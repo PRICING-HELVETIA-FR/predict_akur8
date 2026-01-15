@@ -29,6 +29,22 @@ corresponding predictions are empty as well. You can call this function once
 after scoring with multiple Akur8 models to analyze all missing values in a
 single pass.
 
+## How to export the JSON from Akur8
+Once a model is taged, it is possible to export its coefficients in JSON.
+This JSON is required to create an instance of Akur8Model.
+
+![1768469896091](image/README/1768469896091.png)
+
+It is also possible to export predictions to check this module computes the same
+predictions as Akur8 (with a small tolerance).
+
+![1768470215325](image/README/1768470215325.png)
+
+An interesting feature in "export predictions" is "export with extra options" :
+it is possible to add columns in the exported database to have at least a
+a key to merge predictions with the training dataframe. It is even possible to
+add every column used by the model to get the training dataframe + predictions.
+
 ## Model initialization details
 
 `Akur8Model(model_json, train_df=None, model_name=None, interpolate=True, compress_look_up_tables=True)`
