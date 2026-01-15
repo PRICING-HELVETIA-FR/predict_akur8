@@ -180,7 +180,7 @@ class NumpyNumLutAbstract(NumpyLut):
             idx_inf, idx_sup = self.get_interval(values_to_search)
         left = self.values[idx_inf]
         right = self.values[idx_sup]
-        return np.where(values_to_search - left < right - values_to_search, idx_inf, idx_sup)
+        return np.where(values_to_search - left <= right - values_to_search, idx_inf, idx_sup)
         
 
 class NumpyNumLut(NumpyNumLutAbstract):
