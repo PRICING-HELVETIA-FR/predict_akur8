@@ -2,10 +2,10 @@
 
 Akur8 model scorer with look-up tables interpolation.
 
-## Installation (local)
+## Installation
 
 ```bash
-pip install -e .
+pip install git+https://github.com/PRICING-HELVETIA-FR/predict_akur8.git@main
 ```
 
 ## Usage
