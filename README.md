@@ -12,6 +12,11 @@ pip install git+https://github.com/PRICING-HELVETIA-FR/predict_akur8.git@main
 
 ```python
 from predict_akur8 import Akur8Model, report_unknown_values
+import json
+
+# Load JSON exported from Akur8
+with open("export_json_akur8.json", "r", encoding="utf-8") as f:
+    model_json = json.load(f)
 
 model = Akur8Model(model_json, train_df=train_df, model_name="my_model")
 scored = model.predict(df)
@@ -78,3 +83,5 @@ Notes:
 - For categorical variables, interpolation choice has no effect (direct mapping).
 - For interactions, interpolation is applied on the second variable of the pair
   when it is numeric; for categorical x categorical pairs, the method is ignored.
+- If train_df is not provided to Akur8Model, only the `nearest` interpolation method
+  ensures to reproduce Akur8 predictions.
