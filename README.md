@@ -2,10 +2,10 @@
 
 Akur8 model scorer with look-up tables interpolation.
 
-## Installation (local)
+## Installation
 
 ```bash
-pip install -e .
+pip install git+https://github.com/PRICING-HELVETIA-FR/predict_akur8.git@main
 ```
 
 ## Usage
@@ -17,6 +17,12 @@ model = Akur8Model(model_json, train_df=train_df, model_name="my_model")
 scored = model.predict(df)
 unknowns = report_unknown_values(scored)
 ```
+
+`report_unknown_values` scans the scored dataframe and reports values that were
+not found in the look-up tables. Missing coefficients are left empty, so the
+corresponding predictions are empty as well. You can call this function once
+after scoring with multiple Akur8 models to analyze all missing values in a
+single pass.
 
 ## Model initialization details
 
