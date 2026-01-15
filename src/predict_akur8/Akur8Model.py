@@ -402,7 +402,7 @@ class Akur8Model:
     def predict(
         self, 
         df: pd.DataFrame, 
-        default_interpolation: str='pchip', 
+        default_interpolation: str | None=None,
         interpolation_simple: dict[str, str] | None = None, 
         interpolation_inter: dict[tuple[str, str], str] | None = None
     ) -> pd.DataFrame:
@@ -410,11 +410,15 @@ class Akur8Model:
 
         Args:
             df: Input dataframe to score.
-            default_interpolation: Fallback interpolation method.
+            default_interpolation: Fallback interpolation method. Default value is 'pchip' if the instance was created with interpolate=True, else 'nearest'.
             interpolation_simple: Per-variable interpolation overrides.
             interpolation_inter: Per-interaction interpolation overrides.
         """
-        
+        if self.interpolate:
+            default_interpolation = default_interpolation or 'pchip'
+        else:
+            default_interpolation = default_interpolation or 'nearest'
+
         if interpolation_simple is None:
             interpolation_simple = dict()
         if interpolation_inter is None:
