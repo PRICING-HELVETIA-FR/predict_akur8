@@ -11,6 +11,7 @@ from .utils import complete_lut, is_float_key, DELIM_MODEL_VARS, DELIM_VARS_INTE
 from scipy.interpolate import PchipInterpolator
 from math import log
 import pickle
+import json
 from enum import Enum
 
 
@@ -40,7 +41,7 @@ class Akur8Model:
 
     def __init__(
         self,
-        model_json: dict[str, object],
+        model_json: dict[str, object] | str,
         train_df: pd.DataFrame | None = None,
         force_to_categorical: set[str] | None = None,
         model_name: str | None = None,
@@ -50,7 +51,7 @@ class Akur8Model:
         """Initialize the model from Akur8 JSON and optional training data.
 
         Args:
-            model_json: Akur8 model JSON as a dict.
+            model_json: Akur8 model JSON as a dict or path to the JSON.
             train_df: Optional training dataframe for grid completion.
             force_to_categorical: set of variable that look like numerical 
             but the user wants to force as categorical (no completion, no 
@@ -61,15 +62,21 @@ class Akur8Model:
             interpolate: Whether to compute interpolation coefficients.
             compress_look_up_tables: Whether to compress LUTs for speed.
         """
-        self.link = model_json['linkType']
-        self.intercept = float(model_json['intercept'])
+        if isinstance(model_json, str):
+            with open(model_json, "r", encoding="utf-8") as f:
+                model_json_dict = json.load(f)
+        else:
+            model_json_dict = model_json
+            
+        self.link = model_json_dict['linkType']
+        self.intercept = float(model_json_dict['intercept'])
         if self.link == 'LOG':
             self.intercept = log(self.intercept)
-        self.model_name = model_name if model_name is not None else model_json['projectName']
+        self.model_name = model_name if model_name is not None else model_json_dict['projectName']
 
         # Parse JSON to flat tables
-        self.__simple_pandas_luts = self.__parse_simple_df(model_json)   # var, mod, coef
-        self.__inter_pandas_luts = self.__parse_inter_df(model_json)    # var1, var2, m1, m2, coef
+        self.__simple_pandas_luts = self.__parse_simple_df(model_json_dict)   # var, mod, coef
+        self.__inter_pandas_luts = self.__parse_inter_df(model_json_dict)    # var1, var2, m1, m2, coef
         
         train_df_copy = train_df.copy() if train_df is not None else None
         
