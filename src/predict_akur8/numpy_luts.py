@@ -369,9 +369,8 @@ class NumpyInterLut(NumpyLut):
             for val1, sublut in lut.groupby(var1, as_index=False, dropna=False)
         }
         self._var2_lut = next(iter(self.numpy_subluts.values())) if self.numpy_subluts else None
-        self._nan_lut = self.numpy_subluts.get(self._nan_key)
-        
-    
+        self._nan_lut = self.numpy_subluts.pop(self._nan_key, None)
+
     def _compute_betas(
         self,
         values_to_search: pd.Series,
