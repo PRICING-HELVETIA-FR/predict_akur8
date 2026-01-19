@@ -11,6 +11,14 @@ from .utils import complete_lut, is_float_key, DELIM_MODEL_VARS, DELIM_VARS_INTE
 from scipy.interpolate import PchipInterpolator
 from math import log
 import pickle
+import json
+from enum import Enum
+
+
+class Kind(Enum):
+    NUM = 1
+    CAT = 2
+    NUM_FORCED_TO_CAT = 3
 
 
 class Akur8Model:
@@ -25,7 +33,7 @@ class Akur8Model:
     intercept: float
     model_name: str
     interpolate: bool
-    var_is_numeric: dict[str, bool]
+    var_kind: dict[str, Kind]
     simple_luts: dict[str, NumpyLut] | None
     inter_luts: dict[tuple[str, str], NumpyLut] | None
     __simple_pandas_luts: dict[str, pd.DataFrame] | None
@@ -33,8 +41,9 @@ class Akur8Model:
 
     def __init__(
         self,
-        model_json: dict[str, object],
+        model_json: dict[str, object] | str,
         train_df: pd.DataFrame | None = None,
+        force_to_categorical: set[str] | None = None,
         model_name: str | None = None,
         interpolate: bool=True,
         compress_look_up_tables: bool=True
@@ -42,25 +51,36 @@ class Akur8Model:
         """Initialize the model from Akur8 JSON and optional training data.
 
         Args:
-            model_json: Akur8 model JSON as a dict.
+            model_json: Akur8 model JSON as a dict or path to the JSON.
             train_df: Optional training dataframe for grid completion.
+            force_to_categorical: set of variable that look like numerical 
+            but the user wants to force as categorical (no completion, no 
+            interpolation, only exact matches). When train_df is supplied, 
+            forcing is possible only when the number of distinct values is
+            less or equal 256, otherwise it will remain numerical.
             model_name: Optional name override for output columns.
             interpolate: Whether to compute interpolation coefficients.
             compress_look_up_tables: Whether to compress LUTs for speed.
         """
-        self.link = model_json['linkType']
-        self.intercept = float(model_json['intercept'])
+        if isinstance(model_json, str):
+            with open(model_json, "r", encoding="utf-8") as f:
+                model_json_dict = json.load(f)
+        else:
+            model_json_dict = model_json
+            
+        self.link = model_json_dict['linkType']
+        self.intercept = float(model_json_dict['intercept'])
         if self.link == 'LOG':
             self.intercept = log(self.intercept)
-        self.model_name = model_name if model_name is not None else model_json['projectName']
+        self.model_name = model_name if model_name is not None else model_json_dict['projectName']
 
         # Parse JSON to flat tables
-        self.__simple_pandas_luts = self.__parse_simple_df(model_json)   # var, mod, coef
-        self.__inter_pandas_luts = self.__parse_inter_df(model_json)    # var1, var2, m1, m2, coef
+        self.__simple_pandas_luts = self.__parse_simple_df(model_json_dict)   # var, mod, coef
+        self.__inter_pandas_luts = self.__parse_inter_df(model_json_dict)    # var1, var2, m1, m2, coef
         
         train_df_copy = train_df.copy() if train_df is not None else None
         
-        self.__infer_var_types(train_df_copy)
+        self.__infer_var_types(train_df_copy, force_to_categorical)
         self.__complete_luts(train_df_copy)
         self.__calculate_interpolators(interpolate)
         self.__compress_luts(compress_look_up_tables)
@@ -178,7 +198,7 @@ class Akur8Model:
             var: Variable name to cast.
             train_df: Training dataframe for dtype matching.
         """
-        if self.var_is_numeric[var]:
+        if self.var_kind[var] in (Kind.NUM, Kind.NUM_FORCED_TO_CAT):
             cast_fun = lambda x: pd.to_numeric(x.fillna('').astype(str).str.replace(',', '.').replace({'': np.nan})).astype(float)
         else:
             # Replace NaN by '' for categorical variables before casting to avoid 'NaN' or 'None' strings
@@ -191,16 +211,20 @@ class Akur8Model:
             
         
         
-    def __infer_var_types(self, train_df: pd.DataFrame) -> dict[str, bool]:
+    def __infer_var_types(self, train_df: pd.DataFrame, force_to_categorical: set[str]):
         """Infer variable numeric types and normalize LUT ordering.
 
         Args:
             train_df: Optional training dataframe.
+            force_to_categorical: variable names to be forced as CAT
         """
+        self.var_kind = dict()
+        force_to_categorical = force_to_categorical or set()
+        
         if train_df is None:
-            self.var_is_numeric = self.__infer_var_types_from_json()
+            self.__infer_var_types_from_json(force_to_categorical)
         else:
-            self.var_is_numeric = self.__infer_var_types_from_train_df(train_df)
+            self.__infer_var_types_from_train_df(train_df, force_to_categorical)
         
         for var, lut in self.__simple_pandas_luts.items():
             self.cast_luts(lut, var, train_df)
@@ -211,8 +235,8 @@ class Akur8Model:
         for (var1, var2), lut in self.__inter_pandas_luts.items():
             self.cast_luts(lut, var1, train_df)
             self.cast_luts(lut, var2, train_df)
-            is_num_var1 = self.var_is_numeric[var1]
-            is_num_var2 = self.var_is_numeric[var2]
+            is_num_var1 = self.var_kind[var1] == Kind.NUM
+            is_num_var2 = self.var_kind[var2] == Kind.NUM
         
             df_for_unique_count = train_df if train_df is not None else lut
             # Permutation if we are in one of the following situations :
@@ -236,12 +260,12 @@ class Akur8Model:
         for (var1, var2), lut in self.__inter_pandas_luts.items():
             lut.sort_values(by=[var1, var2], inplace=True)
             
-        self.simple_numeric = [var for var in self.__simple_pandas_luts.keys() if self.var_is_numeric[var]]
+        self.simple_numeric = [var for var in self.__simple_pandas_luts.keys() if self.var_kind[var] == Kind.NUM]
         # Interactions whose second feature is numeric
-        self.inter_numeric = [(var1, var2) for var1, var2 in self.__inter_pandas_luts.keys() if self.var_is_numeric[var2]]
+        self.inter_numeric = [(var1, var2) for var1, var2 in self.__inter_pandas_luts.keys() if self.var_kind[var2] == Kind.NUM]
             
 
-    def __infer_var_types_from_json(self) -> dict[str, bool]:
+    def __infer_var_types_from_json(self, force_to_categorical: set[str]):
         """Infer numeric types by checking if all values parse as floats."""
         values_by_variable: dict[str, set[str]] = {}
         
@@ -257,10 +281,16 @@ class Akur8Model:
             valeurs_var2 = valeurs_var2.union(temp[var2].unique())
             values_by_variable[var2] = valeurs_var2
         
-        return {var: all(is_float_key(v) for v in values) for var, values in values_by_variable.items()}
+        for var, values in values_by_variable.items():
+            if all(is_float_key(v) for v in values):
+                res = Kind.NUM_FORCED_TO_CAT if var in force_to_categorical else Kind.NUM
+            else:
+                res = Kind.CAT
+                
+            self.var_kind[var] = res
     
     
-    def __infer_var_types_from_train_df(self, train_df: pd.DataFrame) -> dict[str, bool]:
+    def __infer_var_types_from_train_df(self, train_df: pd.DataFrame, force_to_categorical: set[str]):
         """Infer numeric types from the training dataframe dtypes.
 
         Args:
@@ -270,19 +300,31 @@ class Akur8Model:
         variables = variables.union(t[0] for t in self.__inter_pandas_luts.keys())
         variables = variables.union(t[1] for t in self.__inter_pandas_luts.keys())
         
-        res = dict()
-        
         for variable in variables:
             is_numeric = is_numeric_dtype(train_df[variable])
+            looks_numeric = is_numeric
             if not is_numeric:
                 try:
                     _ = pd.to_numeric(train_df[variable].dropna().unique(), errors='raise')
-                    is_numeric = True
+                    looks_numeric = True
                 except:
-                    is_numeric = False
-            res[variable] = is_numeric
-
-        return res
+                    looks_numeric = False
+                    
+            number_distinct_values = train_df[variable].nunique()
+                    
+            if is_numeric:
+                res = Kind.NUM
+                if number_distinct_values <= 256 and variable in force_to_categorical:
+                    res = Kind.NUM_FORCED_TO_CAT
+            elif not looks_numeric:
+                res = Kind.CAT
+            elif not is_numeric and looks_numeric:
+                if number_distinct_values > 256: # TODO: A affiner en comparant au nombre de valeurs uniques dans les luts
+                    res = Kind.NUM
+                else:
+                    res = Kind.NUM_FORCED_TO_CAT
+                    
+            self.var_kind[variable] = res
     
     
     def __calculate_interpolators(self, interpolate: bool):
@@ -295,7 +337,7 @@ class Akur8Model:
         if not interpolate:
             return
         
-        # Effets simples
+        # Simples effects
         for var in self.simple_numeric:
             self.__simple_pandas_luts[var] = self.__calculate_interpolators_for_var(self.__simple_pandas_luts[var], var)
             
@@ -362,9 +404,9 @@ class Akur8Model:
         # Simple effects
         for var, lut in self.__simple_pandas_luts.items():
             # Num
-            if self.var_is_numeric[var]:
+            if self.var_kind[var] == Kind.NUM:
                 self.simple_luts[var] = NumpyNumLut(lut, var)
-            # Cat
+            # Cat or Num forced ton cat
             else:
                 self.simple_luts[var] = NumpyCatLut(lut, var)
                 
@@ -372,8 +414,8 @@ class Akur8Model:
                 
         # Interactions
         for (var1, var2), lut in self.__inter_pandas_luts.items():
-            is_num_1 = self.var_is_numeric[var1]
-            is_num_2 = self.var_is_numeric[var2]
+            is_num_1 = self.var_kind[var1] == Kind.NUM
+            is_num_2 = self.var_kind[var2] == Kind.NUM
             key = (var1, var2)
             # Num x Num
             if is_num_1 and is_num_2:
