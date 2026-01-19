@@ -3,6 +3,14 @@
 import numpy as np
 import pandas as pd
 from collections import defaultdict
+from enum import Enum
+
+
+class Kind(Enum):
+    NUM = 1
+    CAT = 2
+    NUM_FORCED_TO_CAT = 3
+    
 
 DELIM_MODEL_VARS = '::coef::'
 DELIM_VARS_INTER = ' x '

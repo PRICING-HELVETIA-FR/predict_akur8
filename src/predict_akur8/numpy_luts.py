@@ -4,7 +4,8 @@ import numpy as np
 import pandas as pd
 from abc import ABC, abstractmethod
 from typing import TypeVar, Type
-from pandas.api.types import is_numeric_dtype
+from .utils import Kind
+
 
 T = TypeVar("NumpyLut")
 
@@ -57,17 +58,18 @@ def _fill_by_grouped_keys(
 
 class NumpyLut(ABC):
     """Base class for numpy-accelerated LUT lookup."""
-    def __init__(self, lut: pd.DataFrame, var: str):
+    def __init__(self, lut: pd.DataFrame, var: str, kind: Kind):
         """Store LUT metadata and target variable name.
 
         Args:
             lut: Lookup table dataframe.
             var: Variable name for this LUT.
+            kind: Kind of the variable (numeric, categorical, numeric forced to categorical).
         """
         self.var_name = var
         self.values_type = lut[var].dtype
-        self.is_numeric = is_numeric_dtype(lut[var])
-        
+        self.kind = kind
+
     def _get_values_to_search(
         self,
         df: pd.DataFrame,
@@ -91,12 +93,15 @@ class NumpyLut(ABC):
             raise Exception(f'The dataframe to predict does not include a column named {self.var_name}')
         
         try:
-            if self.is_numeric:
+            if self.kind == Kind.NUM:
                 values_type = 'float'
-                res = pd.to_numeric(values_to_search, errors='raise').astype(self.values_type).astype(float)
+                res = pd.to_numeric(values_to_search, errors='raise', downcast='float')
+            elif self.kind == Kind.NUM_FORCED_TO_CAT:
+                values_type = 'float'
+                res = pd.to_numeric(values_to_search, errors='ignore', downcast='float')
             else:
                 values_type = 'str'
-                res = values_to_search.fillna('').astype(self.values_type).astype(str)
+                res = values_to_search.fillna('').astype(str)
         except:
             raise Exception(f'In the dataframe to predict, the column {self.var_name} of must have a type that can be casted to {values_type}')
             

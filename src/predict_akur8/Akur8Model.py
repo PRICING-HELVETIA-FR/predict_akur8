@@ -7,18 +7,11 @@ from scipy.special import expit
 from pandas.api.types import is_numeric_dtype
 
 from .numpy_luts import NumpyCatCatLut, NumpyCatNumLut, NumpyNumLut, NumpyNumNumLut, NumpyCatLut, NumpyLut
-from .utils import complete_lut, is_float_key, DELIM_MODEL_VARS, DELIM_VARS_INTER, compress_value1_interaction, compress_simple_lut, get_unique_values
+from .utils import Kind, complete_lut, is_float_key, DELIM_MODEL_VARS, DELIM_VARS_INTER, compress_value1_interaction, compress_simple_lut, get_unique_values
 from scipy.interpolate import PchipInterpolator
 from math import log
 import pickle
 import json
-from enum import Enum
-
-
-class Kind(Enum):
-    NUM = 1
-    CAT = 2
-    NUM_FORCED_TO_CAT = 3
 
 
 class Akur8Model:
@@ -199,7 +192,7 @@ class Akur8Model:
             train_df: Training dataframe for dtype matching.
         """
         if self.var_kind[var] in (Kind.NUM, Kind.NUM_FORCED_TO_CAT):
-            cast_fun = lambda x: pd.to_numeric(x.fillna('').astype(str).str.replace(',', '.').replace({'': np.nan})).astype(float)
+            cast_fun = lambda x: pd.to_numeric(x.fillna('').astype(str).str.replace(',', '.').replace({'': np.nan}), downcast='float', errors='raise')
         else:
             # Replace NaN by '' for categorical variables before casting to avoid 'NaN' or 'None' strings
             cast_fun = lambda x: x.fillna('').astype(str)
@@ -403,8 +396,9 @@ class Akur8Model:
         
         # Simple effects
         for var, lut in self.__simple_pandas_luts.items():
+            kind = self.var_kind[var]
             # Num
-            if self.var_kind[var] == Kind.NUM:
+            if kind == Kind.NUM:
                 self.simple_luts[var] = NumpyNumLut(lut, var)
             # Cat or Num forced ton cat
             else:
@@ -414,17 +408,17 @@ class Akur8Model:
                 
         # Interactions
         for (var1, var2), lut in self.__inter_pandas_luts.items():
-            is_num_1 = self.var_kind[var1] == Kind.NUM
-            is_num_2 = self.var_kind[var2] == Kind.NUM
+            kind_1 = self.var_kind[var1]
+            kind_2 = self.var_kind[var2]
             key = (var1, var2)
             # Num x Num
-            if is_num_1 and is_num_2:
+            if kind_1 == Kind.NUM and kind_2 == Kind.NUM:
                 self.inter_luts[key] = NumpyNumNumLut(lut, var1, var2)
             # Cat x Num
-            if not is_num_1 and is_num_2:
+            if kind_1 != Kind.NUM and kind_2 == Kind.NUM:
                 self.inter_luts[key] = NumpyCatNumLut(lut, var1, var2) 
             # Cat x Cat
-            if not is_num_1 and not is_num_2:
+            if kind_1 != Kind.NUM and kind_2 != Kind.NUM:
                 self.inter_luts[key] = NumpyCatCatLut(lut, var1, var2)
                 
         self.__inter_pandas_luts = None
