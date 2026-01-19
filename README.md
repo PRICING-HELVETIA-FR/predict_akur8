@@ -59,6 +59,10 @@ add every column used by the model to get the training dataframe + predictions.
   training data but are not explicitly present in the JSON buckets. When
   `train_df` is omitted, types are inferred from JSON values only and no LUT
   completion is performed.
+- `force_to_categorical`: set of variable that look like numerical but the user wants to force as 
+  categorical (no completion, no interpolation, only exact matches). When train_df is supplied, 
+  forcing is possible only when the number of distinct values is less or equal 256, otherwise it 
+  will remain numerical. 
 - `interpolate`: precomputes interpolation coefficients for numeric look-up tables so
   `linear` and `pchip` are available at scoring time.
 - `compress_look_up_tables`: removes flat beta plateaus to speed up lookup

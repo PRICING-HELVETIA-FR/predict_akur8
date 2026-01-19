@@ -351,6 +351,8 @@ class NumpyNumNumLut(NumpyNumLutAbstract):
     
 class NumpyInterLut(NumpyLut):
     """Base class for interaction LUTs keyed by a first variable."""
+    _nan_key = object()
+
     def __init__(self, lut: pd.DataFrame, var1: str, var2: str, cls: Type[T]):
         """Build sub-LUTs by grouping on the first variable.
 
@@ -363,12 +365,12 @@ class NumpyInterLut(NumpyLut):
         super().__init__(lut, var1)
     
         self.numpy_subluts = {
-            val1: cls(sublut, var2) 
+            self._nan_key if pd.isna(val1) else val1: cls(sublut, var2)
             for val1, sublut in lut.groupby(var1, as_index=False, dropna=False)
         }
         self._var2_lut = next(iter(self.numpy_subluts.values())) if self.numpy_subluts else None
-        
-    
+        self._nan_lut = self.numpy_subluts.pop(self._nan_key, None)
+
     def _compute_betas(
         self,
         values_to_search: pd.Series,
@@ -390,8 +392,24 @@ class NumpyInterLut(NumpyLut):
         
         values_var2 = self._var2_lut._get_values_to_search(df, values_cache)
         values_arr = values_to_search.to_numpy()
-        codes, uniques = pd.factorize(values_arr, sort=False)
-        row_positions = np.arange(values_arr.shape[0])
+        mask_nan = pd.isna(values_arr)
+        if np.any(mask_nan) and self._nan_lut is not None:
+            row_positions_nan = np.flatnonzero(mask_nan)
+            interpolated_betas[row_positions_nan] = self._nan_lut._compute_betas(
+                values_var2.iloc[row_positions_nan],
+                df.iloc[row_positions_nan],
+                values_cache,
+                interpolation
+            )
+
+        mask_not_nan = ~mask_nan
+        if not np.any(mask_not_nan):
+            return interpolated_betas
+
+        values_not_nan = values_arr[mask_not_nan]
+        codes, uniques = pd.factorize(values_not_nan, sort=False)
+        row_positions = np.flatnonzero(mask_not_nan)
+        
         _fill_by_grouped_keys(
             interpolated_betas,
             row_positions,
@@ -400,8 +418,7 @@ class NumpyInterLut(NumpyLut):
             values_var2,
             df,
             interpolation,
-            values_cache,
-            skip_key=-1
+            values_cache
         )
         
         return interpolated_betas
