@@ -93,7 +93,7 @@ class NumpyLut(ABC):
         try:
             if self.is_numeric:
                 values_type = 'float'
-                res = pd.to_numeric(values_to_search, errors='raise').astype(self.values_type).astype(float)
+                res = pd.to_numeric(values_to_search, errors='coerce').astype(self.values_type).astype(float)
             else:
                 values_type = 'str'
                 res = values_to_search.fillna('').astype(self.values_type).astype(str)
