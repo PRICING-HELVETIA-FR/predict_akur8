@@ -399,10 +399,10 @@ class Akur8Model:
             kind = self.var_kind[var]
             # Num
             if kind == Kind.NUM:
-                self.simple_luts[var] = NumpyNumLut(lut, var)
+                self.simple_luts[var] = NumpyNumLut(lut, var, kind)
             # Cat or Num forced ton cat
             else:
-                self.simple_luts[var] = NumpyCatLut(lut, var)
+                self.simple_luts[var] = NumpyCatLut(lut, var, kind)
                 
         self.__simple_pandas_luts = None
                 
@@ -413,13 +413,13 @@ class Akur8Model:
             key = (var1, var2)
             # Num x Num
             if kind_1 == Kind.NUM and kind_2 == Kind.NUM:
-                self.inter_luts[key] = NumpyNumNumLut(lut, var1, var2)
+                self.inter_luts[key] = NumpyNumNumLut(lut, var1, var2, kind_1, kind_2)
             # Cat x Num
             if kind_1 != Kind.NUM and kind_2 == Kind.NUM:
-                self.inter_luts[key] = NumpyCatNumLut(lut, var1, var2) 
+                self.inter_luts[key] = NumpyCatNumLut(lut, var1, var2, kind_1, kind_2) 
             # Cat x Cat
             if kind_1 != Kind.NUM and kind_2 != Kind.NUM:
-                self.inter_luts[key] = NumpyCatCatLut(lut, var1, var2)
+                self.inter_luts[key] = NumpyCatCatLut(lut, var1, var2, kind_1, kind_2)
                 
         self.__inter_pandas_luts = None
         

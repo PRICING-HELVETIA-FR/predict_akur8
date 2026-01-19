@@ -148,14 +148,14 @@ class NumpyLut(ABC):
     
 class NumpyNumLutAbstract(NumpyLut):
     """Shared helpers for numeric LUTs."""
-    def __init__(self, lut: pd.DataFrame, var: str):
+    def __init__(self, lut: pd.DataFrame, var: str, kind: Kind):
         """Initialize numeric values array for interval lookup.
 
         Args:
             lut: Lookup table dataframe.
             var: Variable name for this LUT.
         """
-        super().__init__(lut, var)
+        super().__init__(lut, var, kind)
         self.values = lut[var].dropna().unique()
         self.values_count = len(self.values)
           
@@ -190,14 +190,14 @@ class NumpyNumLutAbstract(NumpyLut):
 
 class NumpyNumLut(NumpyNumLutAbstract):
     """Numeric LUT with interpolation support."""
-    def __init__(self, lut: pd.DataFrame, var: str):
+    def __init__(self, lut: pd.DataFrame, var: str, kind: Kind):
         """Load numeric LUT arrays for fast interpolation.
 
         Args:
             lut: Lookup table dataframe.
             var: Variable name for this LUT.
         """
-        super().__init__(lut, var)
+        super().__init__(lut, var, kind)
         mask_not_nan = lut[var].notna()
         temp = lut.loc[~mask_not_nan, 'beta'].values
         self.betas = lut.loc[mask_not_nan, 'beta'].to_numpy()
@@ -255,14 +255,14 @@ class NumpyNumLut(NumpyNumLutAbstract):
         
 class NumpyCatLut(NumpyLut):
     """Categorical LUT implemented as a dict lookup."""
-    def __init__(self, lut: pd.DataFrame, var: str):
+    def __init__(self, lut: pd.DataFrame, var: str, kind: Kind):
         """Build a mapping from category to beta.
 
         Args:
             lut: Lookup table dataframe.
             var: Variable name for this LUT.
         """
-        super().__init__(lut, var)
+        super().__init__(lut, var, kind)
         self.betas = lut[[var, 'beta']].set_index(var).to_dict()['beta']
         
     def _compute_betas(
@@ -285,7 +285,7 @@ class NumpyCatLut(NumpyLut):
 
 class NumpyNumNumLut(NumpyNumLutAbstract):
     """Interaction LUT for numeric x numeric features."""
-    def __init__(self, lut: pd.DataFrame, var1: str, var2):
+    def __init__(self, lut: pd.DataFrame, var1: str, var2: str, kind1: Kind, kind2: Kind):
         """Split sub-LUTs by the first numeric variable.
 
         Args:
@@ -293,14 +293,14 @@ class NumpyNumNumLut(NumpyNumLutAbstract):
             var1: Name of the first variable.
             var2: Name of the second variable.
         """
-        super().__init__(lut, var1)
+        super().__init__(lut, var1, kind1)
         mask_nan = lut[var1].isna()
         if not np.any(mask_nan):
             self.empty_betas = None
         else:
-            self.empty_betas = NumpyNumLut(lut[mask_nan], var2)
+            self.empty_betas = NumpyNumLut(lut[mask_nan], var2, kind2)
         self.numpy_num_luts = [
-            NumpyNumLut(sublut, var2) 
+            NumpyNumLut(sublut, var2, kind2) 
             for val1, sublut in lut[~mask_nan].groupby(var1, as_index=False, dropna=False)
         ]
         
@@ -358,7 +358,7 @@ class NumpyInterLut(NumpyLut):
     """Base class for interaction LUTs keyed by a first variable."""
     _nan_key = object()
 
-    def __init__(self, lut: pd.DataFrame, var1: str, var2: str, cls: Type[T]):
+    def __init__(self, lut: pd.DataFrame, var1: str, var2: str, kind1: Kind, kind2: Kind, cls: Type[T]):
         """Build sub-LUTs by grouping on the first variable.
 
         Args:
@@ -367,10 +367,10 @@ class NumpyInterLut(NumpyLut):
             var2: Name of the second variable.
             cls: LUT class to build for sub-tables.
         """
-        super().__init__(lut, var1)
+        super().__init__(lut, var1, kind1)
     
         self.numpy_subluts = {
-            self._nan_key if pd.isna(val1) else val1: cls(sublut, var2)
+            self._nan_key if pd.isna(val1) else val1: cls(sublut, var2, kind2)
             for val1, sublut in lut.groupby(var1, as_index=False, dropna=False)
         }
         self._var2_lut = next(iter(self.numpy_subluts.values())) if self.numpy_subluts else None
@@ -430,7 +430,7 @@ class NumpyInterLut(NumpyLut):
 
 
 class NumpyCatCatLut(NumpyInterLut):
-    def __init__(self, lut: pd.DataFrame, var1: str, var2):
+    def __init__(self, lut: pd.DataFrame, var1: str, var2, kind1: Kind, kind2: Kind):
         """Categorical x categorical interaction LUT.
 
         Args:
@@ -438,11 +438,11 @@ class NumpyCatCatLut(NumpyInterLut):
             var1: Name of the first variable.
             var2: Name of the second variable.
         """
-        super().__init__(lut, var1, var2, NumpyCatLut)
+        super().__init__(lut, var1, var2, kind1, kind2, NumpyCatLut)
         
         
 class NumpyCatNumLut(NumpyInterLut):
-    def __init__(self, lut: pd.DataFrame, var1: str, var2):
+    def __init__(self, lut: pd.DataFrame, var1: str, var2, kind1: Kind, kind2: Kind):
         """Categorical x numeric interaction LUT.
 
         Args:
@@ -450,4 +450,4 @@ class NumpyCatNumLut(NumpyInterLut):
             var1: Name of the first variable.
             var2: Name of the second variable.
         """
-        super().__init__(lut, var1, var2, NumpyNumLut)
+        super().__init__(lut, var1, var2, kind1, kind2, NumpyNumLut)
