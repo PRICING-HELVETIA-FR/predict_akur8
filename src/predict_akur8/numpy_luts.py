@@ -67,7 +67,6 @@ class NumpyLut(ABC):
             kind: Kind of the variable (numeric, categorical, numeric forced to categorical).
         """
         self.var_name = var
-        self.values_type = lut[var].dtype
         self.kind = kind
 
     def _get_values_to_search(
@@ -98,7 +97,8 @@ class NumpyLut(ABC):
                 res = pd.to_numeric(values_to_search, errors='raise', downcast='float')
             elif self.kind == Kind.NUM_FORCED_TO_CAT:
                 values_type = 'float'
-                res = pd.to_numeric(values_to_search, errors='ignore', downcast='float')
+                s_float = pd.to_numeric(values_to_search, errors="coerce", downcast='float')
+                res = s_float.mask(s_float.isna(), values_to_search)
             else:
                 values_type = 'str'
                 res = values_to_search.fillna('').astype(str)
@@ -263,7 +263,9 @@ class NumpyCatLut(NumpyLut):
             var: Variable name for this LUT.
         """
         super().__init__(lut, var, kind)
-        self.betas = lut[[var, 'beta']].set_index(var).to_dict()['beta']
+        mask_nan = lut[var].isna()
+        self.empty_beta = lut.loc[mask_nan, 'beta'].values[0] if np.any(mask_nan) else np.nan
+        self.betas = lut.loc[~mask_nan, [var, 'beta']].set_index(var).to_dict()['beta']
         
     def _compute_betas(
         self,
@@ -280,7 +282,10 @@ class NumpyCatLut(NumpyLut):
             interpolation: Interpolation method name.
             values_cache: Optional cache of precomputed series.
         """
-        return values_to_search.map(self.betas).to_numpy()
+        betas = np.full(values_to_search.shape, self.empty_beta, dtype=np.float64)
+        mask_not_nan = values_to_search.notna()
+        betas[mask_not_nan] = values_to_search[mask_not_nan].map(self.betas).to_numpy()
+        return betas
 
 
 class NumpyNumNumLut(NumpyNumLutAbstract):
