@@ -92,11 +92,11 @@ class NumpyLut(ABC):
         
         try:
             if self.is_numeric:
-                res = pd.to_numeric(values_to_search, errors='raise').astype(self.values_type).astype(float)
                 values_type = 'float'
+                res = pd.to_numeric(values_to_search, errors='raise').astype(self.values_type).astype(float)
             else:
-                res = values_to_search.fillna('').astype(self.values_type).astype(str)
                 values_type = 'str'
+                res = values_to_search.fillna('').astype(self.values_type).astype(str)
         except:
             raise Exception(f'In the dataframe to predict, the column {self.var_name} of must have a type that can be casted to {values_type}')
             
