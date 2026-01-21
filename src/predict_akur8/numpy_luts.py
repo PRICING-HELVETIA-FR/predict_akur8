@@ -4,10 +4,38 @@ import numpy as np
 import pandas as pd
 from abc import ABC, abstractmethod
 from typing import TypeVar, Type
-from .utils import Kind
+from .utils import Kind, is_float_key, to_float_fr
 
 
 T = TypeVar("NumpyLut")
+
+
+def _ordered_unique(values: list) -> list:
+    if not values:
+        return []
+    return pd.Series(values).drop_duplicates().tolist()
+
+
+def _sort_values(values: list) -> list:
+    if not values:
+        return []
+    non_nan = [v for v in values if not pd.isna(v)]
+    has_nan = len(non_nan) != len(values)
+    if not non_nan:
+        return [np.nan]
+
+    if all(isinstance(v, (np.integer, int, np.floating, float)) for v in non_nan):
+        ordered = sorted(non_nan)
+    else:
+        str_values = [v for v in non_nan if isinstance(v, str)]
+        if len(str_values) == len(non_nan) and all(is_float_key(v) for v in str_values):
+            ordered = sorted(non_nan, key=lambda v: to_float_fr(v))
+        else:
+            ordered = sorted(non_nan, key=lambda v: str(v))
+
+    if has_nan:
+        ordered.append(np.nan)
+    return ordered
 
 
 def _fill_by_grouped_keys(
@@ -144,6 +172,14 @@ class NumpyLut(ABC):
             values_cache: Optional cache of precomputed series.
         """
         raise NotImplementedError
+
+    def export_simple_entries(self) -> tuple[list, list]:
+        """Return (values, betas) for simple LUT export."""
+        raise NotImplementedError
+
+    def export_interaction_axes_and_lookup(self) -> tuple[list, list, dict]:
+        """Return (row_values, col_values, beta_lookup) for interaction export."""
+        raise NotImplementedError
     
     
 class NumpyNumLutAbstract(NumpyLut):
@@ -251,6 +287,14 @@ class NumpyNumLut(NumpyNumLutAbstract):
             raise Exception(f"Interpolation method {interpolation} does not exist.")
         
         return interpolated_betas
+
+    def export_simple_entries(self) -> tuple[list, list]:
+        values = list(self.values)
+        betas = list(self.betas)
+        if not pd.isna(self.empty_beta):
+            values.append(np.nan)
+            betas.append(self.empty_beta)
+        return values, betas
         
         
 class NumpyCatLut(NumpyLut):
@@ -286,6 +330,17 @@ class NumpyCatLut(NumpyLut):
         mask_not_nan = values_to_search.notna()
         betas[mask_not_nan] = values_to_search[mask_not_nan].map(self.betas).to_numpy()
         return betas
+
+    def export_simple_entries(self) -> tuple[list, list]:
+        items = list(self.betas.items())
+        values = [k for k, _ in items]
+        values = _sort_values(values)
+        beta_map = dict(items)
+        betas = [beta_map[v] for v in values]
+        if not pd.isna(self.empty_beta):
+            values.append(np.nan)
+            betas.append(self.empty_beta)
+        return values, betas
 
 
 class NumpyNumNumLut(NumpyNumLutAbstract):
@@ -356,6 +411,30 @@ class NumpyNumNumLut(NumpyNumLutAbstract):
                 values_cache
             )
         return interpolated_betas
+
+    def export_interaction_axes_and_lookup(self) -> tuple[list, list, dict]:
+        row_values = list(self.values)
+        if self.empty_betas is not None and not pd.isna(self.empty_betas.empty_beta):
+            row_values.append(np.nan)
+
+        sublut_by_value = {val: sub for val, sub in zip(self.values, self.numpy_num_luts)}
+        if self.empty_betas is not None:
+            sublut_by_value[np.nan] = self.empty_betas
+
+        col_values = []
+        for sub in sublut_by_value.values():
+            col_values.extend(list(sub.values))
+            if not pd.isna(sub.empty_beta):
+                col_values.append(np.nan)
+        col_values = _sort_values(_ordered_unique(col_values))
+
+        beta_lookup = {}
+        for row_val, sub in sublut_by_value.items():
+            row_key = np.nan if pd.isna(row_val) else row_val
+            values, betas = sub.export_simple_entries()
+            beta_lookup[row_key] = dict(zip(values, betas))
+
+        return row_values, col_values, beta_lookup
     
           
     
@@ -432,6 +511,27 @@ class NumpyInterLut(NumpyLut):
         )
         
         return interpolated_betas
+
+    def export_interaction_axes_and_lookup(self) -> tuple[list, list, dict]:
+        subluts = dict(self.numpy_subluts)
+        if self._nan_lut is not None:
+            subluts[np.nan] = self._nan_lut
+
+        row_values = _sort_values(_ordered_unique(list(subluts.keys())))
+        col_values = []
+        for sub in subluts.values():
+            if isinstance(sub, (NumpyNumLut, NumpyCatLut)):
+                values, _ = sub.export_simple_entries()
+                col_values.extend(values)
+        col_values = _sort_values(_ordered_unique(col_values))
+
+        beta_lookup = {}
+        for row_val, sub in subluts.items():
+            row_key = np.nan if pd.isna(row_val) else row_val
+            values, betas = sub.export_simple_entries()
+            beta_lookup[row_key] = dict(zip(values, betas))
+
+        return row_values, col_values, beta_lookup
 
 
 class NumpyCatCatLut(NumpyInterLut):

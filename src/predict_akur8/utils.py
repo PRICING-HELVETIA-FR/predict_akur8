@@ -192,3 +192,32 @@ def compress_value1_interaction(
     end   = np.r_[~eq_prev, True]
 
     return df[df[var1].isin(u1[start | end])]
+
+
+def format_beta(value: object) -> str:
+    if pd.isna(value):
+        return ""
+    val = float(value)
+    text = repr(val)
+    if "e" in text or "E" in text:
+        text = np.format_float_positional(val, trim='-')
+    return text.replace(".", ",")
+
+
+def format_value(value: object) -> str:
+    if pd.isna(value):
+        text = ""
+    elif isinstance(value, (np.integer, int)):
+        text = str(int(value))
+    elif isinstance(value, (np.floating, float)):
+        val = float(value)
+        if val.is_integer():
+            text = str(int(val))
+        else:
+            text = repr(val)
+            if "e" in text or "E" in text:
+                text = np.format_float_positional(val, trim='-')
+    else:
+        text = str(value)
+    text = text.replace('"', '""')
+    return f'"{text}"'

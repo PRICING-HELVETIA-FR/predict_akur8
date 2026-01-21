@@ -7,7 +7,7 @@ from scipy.special import expit
 from pandas.api.types import is_numeric_dtype
 
 from .numpy_luts import NumpyCatCatLut, NumpyCatNumLut, NumpyNumLut, NumpyNumNumLut, NumpyCatLut, NumpyLut
-from .utils import Kind, complete_lut, is_float_key, DELIM_MODEL_VARS, DELIM_VARS_INTER, compress_value1_interaction, compress_simple_lut, get_unique_values
+from .utils import Kind, complete_lut, format_beta, format_value, is_float_key, DELIM_MODEL_VARS, DELIM_VARS_INTER, compress_value1_interaction, compress_simple_lut, get_unique_values
 from scipy.interpolate import PchipInterpolator
 from math import log
 import pickle
@@ -491,7 +491,7 @@ class Akur8Model:
     def to_pickle(self, path: str):
         with open(path, 'wb') as f:
             pickle.dump(self, f)
-         
+        
             
     @staticmethod
     def from_pickle(path: str):
@@ -503,3 +503,98 @@ class Akur8Model:
                         module = module.replace("src.", "", 1)
                     return super().find_class(module, name)
             return _Akur8Unpickler(f).load()
+
+
+    def export_emblem_csv(self, path: str) -> None:
+        """Export post-processed LUTs (numpy) to a single-sheet CSV in EMBLEM format.
+
+        Args:
+            path: Destination CSV path.
+        """
+        simple_vars = sorted(self.simple_luts.keys())
+        simple_columns = 3 * len(simple_vars) - 1 if simple_vars else 0
+
+        max_interaction_columns = 0
+        for _, lut in self.inter_luts.items():
+            _, col_values, _ = lut.export_interaction_axes_and_lookup()
+            max_interaction_columns = max(max_interaction_columns, 2 + len(col_values))
+
+        max_columns = max(simple_columns, max_interaction_columns, 3)
+        blank_max = [""] * max_columns
+
+        lines: list[str] = []
+        base_row = ["Base", "", format_beta(self.intercept)] + [""] * (max_columns - 3)
+        lines.append(";".join(base_row))
+        lines.append(";".join(blank_max))
+        lines.append(";".join(blank_max))
+
+        if simple_vars:
+            header_row = []
+            for i, var in enumerate(simple_vars):
+                header_row.extend([var, ""])
+                if i < len(simple_vars) - 1:
+                    header_row.append("")
+            lines.append(";".join(header_row))
+            lines.append(";".join(blank_max))
+            lines.append(";".join(header_row))
+
+            values_by_var = {}
+            betas_by_var = {}
+            max_rows = 0
+            for var in simple_vars:
+                lut = self.simple_luts[var]
+                values, betas = lut.export_simple_entries()
+                values_by_var[var] = values
+                betas_by_var[var] = betas
+                max_rows = max(max_rows, len(values))
+
+            for row_idx in range(max_rows):
+                row = []
+                for i, var in enumerate(simple_vars):
+                    values = values_by_var[var]
+                    betas = betas_by_var[var]
+                    if row_idx < len(values):
+                        row.extend([format_value(values[row_idx]), format_beta(betas[row_idx])])
+                    else:
+                        row.extend(["", ""])
+                    if i < len(simple_vars) - 1:
+                        row.append("")
+                lines.append(";".join(row))
+
+        if self.inter_luts:
+            interactions = []
+            for (var1, var2) in self.inter_luts.keys():
+                interactions.append((f"{var2} * {var1}", var1, var2))
+            interactions.sort(key=lambda x: x[0])
+
+            for idx, (title, var1, var2) in enumerate(interactions):
+                if idx > 0:
+                    lines.append(";".join(blank_max))
+                title_row = [title] + [""] * (max_columns - 1)
+                lines.append(";".join(title_row))
+                lines.append(";".join(blank_max))
+
+                lut = self.inter_luts[(var1, var2)]
+                row_values, col_values, beta_lookup = lut.export_interaction_axes_and_lookup()
+
+                header_var = ["", "", var2] + [""] * (max_columns - 3)
+                lines.append(";".join(header_var))
+                header_vals = ["", ""] + [format_value(v) for v in col_values]
+                header_vals += [""] * (max_columns - len(header_vals))
+                lines.append(";".join(header_vals))
+
+                for row_idx, row_val in enumerate(row_values):
+                    row = [var1 if row_idx == 0 else "", format_value(row_val)]
+                    row_key = np.nan if pd.isna(row_val) else row_val
+                    row_map = beta_lookup.get(row_key, {})
+                    for col_val in col_values:
+                        col_key = np.nan if pd.isna(col_val) else col_val
+                        row.append(format_beta(row_map.get(col_key)))
+                    row += [""] * (max_columns - len(row))
+                    lines.append(";".join(row))
+
+            lines.append(";".join(blank_max))
+            lines.append(";".join(blank_max))
+
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
