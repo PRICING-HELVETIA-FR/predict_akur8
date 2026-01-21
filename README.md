@@ -76,6 +76,17 @@ model2 = Akur8Model.from_pickle("model.pkl")
 scored = model2.predict(df)
 ```
 
+## Export EMBLEM CSV
+
+`export_emblem_csv` writes the post-processed look-up tables (numpy LUTs) into a
+single-sheet CSV compatible with EMBLEM. The output includes the intercept, all
+simple effects (value/beta columns), and interaction matrices.
+
+```python
+model = Akur8Model(model_json, train_df=train_df)
+model.export_emblem_csv("emblem.csv")
+```
+
 ## Interpolation options
 
 `predict` accepts a default interpolation and per-variable overrides:
