@@ -440,7 +440,8 @@ class Akur8Model:
         df: pd.DataFrame, 
         default_interpolation: str | None=None,
         interpolation_simple: dict[str, str] | None = None, 
-        interpolation_inter: dict[tuple[str, str], str] | None = None
+        interpolation_inter: dict[tuple[str, str], str] | None = None,
+        include_coefs: bool = True
     ) -> pd.DataFrame:
         """Score a dataframe and return input with added coefficient and prediction columns.
 
@@ -449,6 +450,7 @@ class Akur8Model:
             default_interpolation: Fallback interpolation method. Default value is 'pchip' if the instance was created with interpolate=True, else 'nearest'.
             interpolation_simple: Per-variable interpolation overrides.
             interpolation_inter: Per-interaction interpolation overrides.
+            include_coefs: Whether to include coefficient and intercept columns in output.
         """
         if self.interpolate:
             default_interpolation = default_interpolation or 'pchip'
@@ -462,25 +464,34 @@ class Akur8Model:
         values_cache = dict()
         out = pd.DataFrame(index=df.index)
         col_intercept = f'{self.model_name}::intercept'
-        out[col_intercept] = self.intercept
-        cols_to_sum = [col_intercept]
+        intercept_series = pd.Series(self.intercept, index=df.index)
+        components = [intercept_series]
+        if include_coefs:
+            out[col_intercept] = intercept_series
         
         for var, lut in self.simple_luts.items():
             coef_column = self.__get_col_coef_name(var)
             interpolation = interpolation_simple.get(var, default_interpolation)
             self.__check_interpolation_method(interpolation, var)
-            out[coef_column] = lut.compute_betas(df, values_cache, interpolation)
-            cols_to_sum.append(coef_column)
+            betas = lut.compute_betas(df, values_cache, interpolation)
+            components.append(betas)
+            if include_coefs:
+                out[coef_column] = betas
             
         for (var1, var2), lut in self.inter_luts.items():
             coef_column = self.__get_col_coef_name(var1, var2)
             interpolation = interpolation_inter.get((var1, var2), default_interpolation)
             self.__check_interpolation_method(interpolation, var2)
-            out[coef_column] = lut.compute_betas(df, values_cache, interpolation)
-            cols_to_sum.append(coef_column)
+            betas = lut.compute_betas(df, values_cache, interpolation)
+            components.append(betas)
+            if include_coefs:
+                out[coef_column] = betas
             
         col_prediction = f'{self.model_name}::prediction'
-        out[col_prediction] = out[cols_to_sum].sum(axis=1, skipna=False)
+        prediction = components[0]
+        for component in components[1:]:
+            prediction = prediction + component
+        out[col_prediction] = prediction
         if self.link == 'LOG':
             out[col_prediction] = np.exp(out[col_prediction])
         if self.link == 'LOGIT':
