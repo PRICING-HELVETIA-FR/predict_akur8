@@ -31,6 +31,7 @@ class Akur8Model:
     inter_luts: dict[tuple[str, str], NumpyLut] | None
     __simple_pandas_luts: dict[str, pd.DataFrame] | None
     __inter_pandas_luts: dict[tuple[str, str], pd.DataFrame] | None
+    offset_column: str
 
     def __init__(
         self,
@@ -66,6 +67,9 @@ class Akur8Model:
         if self.link == 'LOG':
             self.intercept = log(self.intercept)
         self.model_name = model_name if model_name is not None else model_json_dict['projectName']
+        
+        if model_json_dict['targetDividedByExposure'] == 'true':
+            self.offset_column = model_json_dict['exposure']
 
         # Parse JSON to flat tables
         self.__simple_pandas_luts = self.__parse_simple_df(model_json_dict)   # var, mod, coef
@@ -496,6 +500,11 @@ class Akur8Model:
             out[col_prediction] = np.exp(out[col_prediction])
         if self.link == 'LOGIT':
             out[col_prediction] = expit(out[col_prediction])
+            
+        if self.offset_column is not None:
+            if self.offset_column not in df.columns:
+                raise Exception(f"Exposure column {self.offset_column} does not exist in the dataframe to predict")
+            out[col_prediction] = out[col_prediction] * df[self.offset_column]
             
         return pd.concat([df, out], axis=1)
         
