@@ -5,10 +5,12 @@ import pandas as pd
 from flatten_dict import flatten
 from scipy.special import expit
 from pandas.api.types import is_numeric_dtype
+import warnings
 
 from .numpy_luts import NumpyCatCatLut, NumpyCatNumLut, NumpyNumLut, NumpyNumNumLut, NumpyCatLut, NumpyLut
 from .utils import Kind, complete_lut, format_beta, format_value, is_float_key, DELIM_MODEL_VARS, DELIM_VARS_INTER, compress_value1_interaction, compress_simple_lut, get_unique_values
 from scipy.interpolate import PchipInterpolator
+from scipy.stats import gamma as gamma_dist, invgauss, nbinom, norm, poisson
 from math import log
 import pickle
 import json
@@ -31,7 +33,11 @@ class Akur8Model:
     inter_luts: dict[tuple[str, str], NumpyLut] | None
     __simple_pandas_luts: dict[str, pd.DataFrame] | None
     __inter_pandas_luts: dict[tuple[str, str], pd.DataFrame] | None
-    offset_column: str
+    offset_column: str | None
+    loss_type: str | None
+    target_column: str | None
+    dispersion_parameter: float
+    tweedie_p: float | None
 
     def __init__(
         self,
@@ -40,7 +46,8 @@ class Akur8Model:
         force_to_categorical: set[str] | None = None,
         model_name: str | None = None,
         interpolate: bool=True,
-        compress_look_up_tables: bool=True
+        compress_look_up_tables: bool=True,
+        tweedie_p: float = 1.5
     ):
         """Initialize the model from Akur8 JSON and optional training data.
 
@@ -55,6 +62,8 @@ class Akur8Model:
             model_name: Optional name override for output columns.
             interpolate: Whether to compute interpolation coefficients.
             compress_look_up_tables: Whether to compress LUTs for speed.
+            tweedie_p: Tweedie power parameter p (used when lossType is Tweedie).
+            Default value is 1.5 as in AKur8.
         """
         if isinstance(model_json, str):
             with open(model_json, "r", encoding="utf-8") as f:
@@ -63,13 +72,24 @@ class Akur8Model:
             model_json_dict = model_json
             
         self.link = model_json_dict['linkType']
+        self.loss_type = model_json_dict['lossType']
+        self.tweedie_p = tweedie_p
         self.intercept = float(model_json_dict['intercept'])
         if self.link == 'LOG':
             self.intercept = log(self.intercept)
         self.model_name = model_name if model_name is not None else model_json_dict['projectName']
+        self.offset_column = None
         
         if model_json_dict['targetDividedByExposure'] == 'true':
             self.offset_column = model_json_dict['exposure']
+            
+        self.target_column = model_json_dict['target']
+        
+        # Same restrictions as in Akur8
+        if self.loss_type == "TWEEDIE" and self.tweedie_p <= 1 or self.tweedie_p >= 2:
+            raise NotImplementedError(
+                f"Tweedie is only implemented for 1<p<2 (Poisson-Gamma series), got p={self.tweedie_p}."
+            )
 
         # Parse JSON to flat tables
         self.__simple_pandas_luts = self.__parse_simple_df(model_json_dict)   # var, mod, coef
@@ -82,6 +102,7 @@ class Akur8Model:
         self.__calculate_interpolators(interpolate)
         self.__compress_luts(compress_look_up_tables)
         self.__luts_to_numpy()
+        self.dispersion_parameter = self.__estimate_dispersion_parameter(train_df_copy)
         
         
     def __compress_luts(self, compress_look_up_tables: bool):
@@ -391,6 +412,86 @@ class Akur8Model:
             return f'{self.model_name}{DELIM_MODEL_VARS}{var}'
         else:
             return f'{self.model_name}{DELIM_MODEL_VARS}{var}{DELIM_VARS_INTER}{var2}'
+
+
+    def __estimate_dispersion_parameter(self, train_df: pd.DataFrame | None) -> float:
+        """Estimate GLM dispersion from family and available training data."""
+        family = self.loss_type
+        if family == "POISSON":
+            return 1.0
+
+        if train_df is None:
+            warnings.warn(
+                f"Unable to estimate dispersion for lossType={self.loss_type}: missing train_df. Returning NaN.",
+                RuntimeWarning
+            )
+            return np.nan
+
+        prediction_col = f"{self.model_name}::prediction"
+        variance_col = f"{self.model_name}::variance"
+        pred = self.predict(
+            train_df,
+            include_coefs=False,
+            include_variance=True,
+            variance_with_dispersion=False,
+            default_interpolation='nearest'
+        )
+        mu = pd.to_numeric(pred[prediction_col], errors='coerce')
+        variance = pd.to_numeric(pred[variance_col], errors='coerce')
+        y = train_df[self.target_column]
+        resid2 = (y - mu) ** 2
+
+        if family == "NEGATIVEBINOMIAL":
+            denom = variance
+            num = resid2 - mu
+            valid = np.isfinite(num) & np.isfinite(denom) & (denom > 0)
+            if not np.any(valid):
+                return np.nan
+            value = np.mean(num[valid] / denom[valid])
+            return float(max(value, 0.0))
+        elif family in ("GAUSSIAN", "GAMMA", "INVERSEGAUSSIAN", "TWEEDIE"):
+            denom = variance
+        else:
+            raise ValueError(f"Unsupported lossType '{self.loss_type}'.")
+
+        valid = np.isfinite(resid2) & np.isfinite(denom) & (denom > 0)
+        if not np.any(valid):
+            return np.nan
+        phi = np.mean(resid2[valid] / denom[valid])
+        return float(phi)
+
+
+    def __compute_prediction_variance(
+        self,
+        mean_prediction: pd.Series,
+        with_dispersion: bool = True
+    ) -> pd.Series:
+        """Compute per-row prediction variance from mean prediction and loss family."""
+        family = self.loss_type
+        mu = pd.to_numeric(mean_prediction, errors='coerce')
+
+        if family == "POISSON":
+            variance = mu
+        elif family == "GAUSSIAN":
+            variance = pd.Series(1.0, index=mu.index, dtype=float)
+        elif family == "GAMMA":
+            variance = mu ** 2
+        elif family == "INVERSEGAUSSIAN":
+            variance = mu ** 3
+        elif family == "TWEEDIE":
+            variance = mu ** self.tweedie_p
+        elif family == "NEGATIVEBINOMIAL":
+            if with_dispersion:
+                variance = mu + self.dispersion_parameter * (mu ** 2)
+            else:
+                variance = mu ** 2
+        else:
+            variance = pd.Series(np.nan, index=mu.index, dtype=float)
+
+        if with_dispersion and family in ("GAUSSIAN", "GAMMA", "INVERSEGAUSSIAN", "TWEEDIE"):
+            variance = self.dispersion_parameter * variance
+
+        return variance
         
     
     def __luts_to_numpy(self):
@@ -445,7 +546,9 @@ class Akur8Model:
         default_interpolation: str | None=None,
         interpolation_simple: dict[str, str] | None = None, 
         interpolation_inter: dict[tuple[str, str], str] | None = None,
-        include_coefs: bool = True
+        include_coefs: bool = True,
+        include_variance: bool = False,
+        variance_with_dispersion: bool = True
     ) -> pd.DataFrame:
         """Score a dataframe and return input with added coefficient and prediction columns.
 
@@ -455,6 +558,8 @@ class Akur8Model:
             interpolation_simple: Per-variable interpolation overrides.
             interpolation_inter: Per-interaction interpolation overrides.
             include_coefs: Whether to include coefficient and intercept columns in output.
+            include_variance: Whether to add a variance column.
+            variance_with_dispersion: If True, scales variance with estimated dispersion when relevant.
         """
         if self.interpolate:
             default_interpolation = default_interpolation or 'pchip'
@@ -500,13 +605,185 @@ class Akur8Model:
             out[col_prediction] = np.exp(out[col_prediction])
         if self.link == 'LOGIT':
             out[col_prediction] = expit(out[col_prediction])
+
+        if include_variance:
+            col_variance = f'{self.model_name}::variance'
+            out[col_variance] = self.__compute_prediction_variance(
+                out[col_prediction],
+                with_dispersion=variance_with_dispersion
+            )
             
+        # Mutliply by exposure after computing the variance
         if self.offset_column is not None:
             if self.offset_column not in df.columns:
                 raise Exception(f"Exposure column {self.offset_column} does not exist in the dataframe to predict")
             out[col_prediction] = out[col_prediction] * df[self.offset_column]
             
         return pd.concat([df, out], axis=1)
+
+
+    def predict_cdf(
+        self,
+        df: pd.DataFrame,
+        point: float | int | pd.Series | np.ndarray | str,
+        default_interpolation: str | None = None,
+        interpolation_simple: dict[str, str] | None = None,
+        interpolation_inter: dict[tuple[str, str], str] | None = None,
+        tweedie_series_tol: float = 1e-10,
+        tweedie_series_max_terms: int = 10000,
+    ) -> pd.DataFrame:
+        """Compute per-row CDF value P(Y <= point) according to model loss family.
+
+        Args:
+            df: Input dataframe to score.
+            point: Scalar value, per-row array/Series, or a column name in df.
+            default_interpolation: Fallback interpolation method.
+            interpolation_simple: Per-variable interpolation overrides.
+            interpolation_inter: Per-interaction interpolation overrides.
+            tweedie_series_tol: Tail probability tolerance for Tweedie CDF series truncation.
+            tweedie_series_max_terms: Hard cap on number of series terms for Tweedie CDF.
+        """
+        prediction_col = f"{self.model_name}::prediction"
+        variance_col = f"{self.model_name}::variance"
+        cdf_col = f"{self.model_name}::cdf"
+
+        if prediction_col in df.columns:
+            pred = df.copy()
+            # Always recompute variance with dispersion: an existing variance column
+            # may have been produced without dispersion scaling.
+            pred[variance_col] = self.__compute_prediction_variance(
+                pred[prediction_col],
+                with_dispersion=True
+            )
+        else:
+            pred = self.predict(
+                df=df,
+                default_interpolation=default_interpolation,
+                interpolation_simple=interpolation_simple,
+                interpolation_inter=interpolation_inter,
+                include_coefs=False,
+                include_variance=False
+            )
+            pred[variance_col] = self.__compute_prediction_variance(
+                pred[prediction_col],
+                with_dispersion=True
+            )
+
+        mu = pd.to_numeric(pred[prediction_col], errors='coerce')
+        var = pd.to_numeric(pred[variance_col], errors='coerce')
+
+        if isinstance(point, str):
+            if point not in df.columns:
+                raise ValueError(f"Column '{point}' not found in dataframe.")
+            x = pd.to_numeric(df[point], errors='coerce')
+        elif np.isscalar(point):
+            x = pd.Series(float(point), index=df.index, dtype=float)
+        else:
+            x = pd.Series(point, index=df.index, dtype=float)
+            x = pd.to_numeric(x, errors='coerce')
+
+        family = str(self.loss_type).upper()
+        cdf = pd.Series(np.nan, index=df.index, dtype=float)
+
+        if family == "POISSON":
+            valid = np.isfinite(mu) & (mu >= 0) & np.isfinite(x)
+            cdf.loc[valid] = poisson.cdf(np.floor(x.loc[valid]), mu.loc[valid])
+        elif family in ("NEGATIVEBINOMIAL", "NEGATIVE_BINOMIAL"):
+            alpha = float(self.dispersion_parameter)
+            valid = np.isfinite(mu) & (mu > 0) & np.isfinite(x)
+            if np.isnan(alpha) or alpha < 0:
+                pass
+            elif alpha == 0:
+                cdf.loc[valid] = poisson.cdf(np.floor(x.loc[valid]), mu.loc[valid])
+            else:
+                n = 1.0 / alpha
+                p = n / (n + mu.loc[valid])
+                cdf.loc[valid] = nbinom.cdf(np.floor(x.loc[valid]), n, p)
+        elif family == "GAUSSIAN":
+            sigma = np.sqrt(var)
+            valid = np.isfinite(mu) & np.isfinite(sigma) & (sigma > 0) & np.isfinite(x)
+            cdf.loc[valid] = norm.cdf(x.loc[valid], loc=mu.loc[valid], scale=sigma.loc[valid])
+        elif family == "GAMMA":
+            valid = np.isfinite(mu) & np.isfinite(var) & (mu > 0) & (var > 0) & np.isfinite(x) & (x >= 0)
+            if np.any(valid):
+                shape = (mu.loc[valid] ** 2) / var.loc[valid]
+                scale = var.loc[valid] / mu.loc[valid]
+                cdf.loc[valid] = gamma_dist.cdf(x.loc[valid], a=shape, scale=scale)
+        elif family in ("INVERSEGAUSSIAN", "INVERSE_GAUSSIAN"):
+            valid = np.isfinite(mu) & np.isfinite(var) & (mu > 0) & (var > 0) & np.isfinite(x) & (x >= 0)
+            if np.any(valid):
+                shape_mu = var.loc[valid] / (mu.loc[valid] ** 2)
+                scale = (mu.loc[valid] ** 3) / var.loc[valid]
+                cdf.loc[valid] = invgauss.cdf(x.loc[valid], mu=shape_mu, scale=scale)
+        elif family == "TWEEDIE":
+            valid = np.isfinite(mu) & np.isfinite(var) & (mu > 0) & (var > 0) & np.isfinite(x)
+            if np.any(valid):
+                cdf.loc[valid] = self.__tweedie_cdf_poisson_gamma_series(
+                    y=x.loc[valid],
+                    mu=mu.loc[valid],
+                    var=var.loc[valid],
+                    p=self.tweedie_p,
+                    tol=tweedie_series_tol,
+                    max_terms=tweedie_series_max_terms
+                )
+        else:
+            raise ValueError(f"Unsupported lossType '{self.loss_type}'.")
+
+        pred[cdf_col] = cdf
+        return pred
+
+
+    @staticmethod
+    def __tweedie_cdf_poisson_gamma_series(
+        y: pd.Series,
+        mu: pd.Series,
+        var: pd.Series,
+        p: float,
+        tol: float = 1e-10,
+        max_terms: int = 10_000
+    ) -> pd.Series:
+        """Compute Tweedie CDF for 1<p<2 using the Poisson-Gamma series."""
+        if max_terms < 1:
+            raise ValueError("max_terms must be >= 1.")
+
+        alpha = (2.0 - p) / (p - 1.0)
+        out = pd.Series(np.nan, index=y.index, dtype=float)
+
+        for idx in y.index:
+            yi = float(y.loc[idx])
+            mui = float(mu.loc[idx])
+            vari = float(var.loc[idx])
+
+            if not (np.isfinite(yi) and np.isfinite(mui) and np.isfinite(vari) and mui > 0 and vari > 0):
+                continue
+            if yi < 0:
+                out.loc[idx] = 0.0
+                continue
+
+            lam = (mui * mui) / ((2.0 - p) * vari)
+            theta = (p - 1.0) * vari / mui
+            if not (np.isfinite(lam) and np.isfinite(theta) and lam >= 0 and theta > 0):
+                continue
+
+            if yi == 0:
+                out.loc[idx] = float(np.exp(-lam))
+                continue
+
+            n_max = int(poisson.ppf(1.0 - tol, lam))
+            if not np.isfinite(n_max):
+                n_max = max_terms
+            n_max = max(1, min(n_max, max_terms))
+
+            cdf_val = float(np.exp(-lam))
+            for n in range(1, n_max + 1):
+                w = float(poisson.pmf(n, lam))
+                if w <= 0.0:
+                    continue
+                cdf_val += w * float(gamma_dist.cdf(yi, a=n * alpha, scale=theta))
+
+            out.loc[idx] = min(max(cdf_val, 0.0), 1.0)
+
+        return out
         
     def to_pickle(self, path: str):
         with open(path, 'wb') as f:
