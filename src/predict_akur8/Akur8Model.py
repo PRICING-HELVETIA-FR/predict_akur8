@@ -47,7 +47,7 @@ class Akur8Model:
         model_name: str | None = None,
         interpolate: bool=True,
         compress_look_up_tables: bool=True,
-        tweedie_p: float = 1.5
+        tweedie_p: float | None = None
     ):
         """Initialize the model from Akur8 JSON and optional training data.
 
@@ -63,8 +63,9 @@ class Akur8Model:
             interpolate: Whether to compute interpolation coefficients.
             compress_look_up_tables: Whether to compress LUTs for speed.
             tweedie_p: Tweedie power parameter p (used when lossType is Tweedie).
-            Default value is 1.5 as in AKur8.
+            Default value is 1.5 as in Akur8.
         """
+        
         if isinstance(model_json, str):
             with open(model_json, "r", encoding="utf-8") as f:
                 model_json_dict = json.load(f)
@@ -85,11 +86,15 @@ class Akur8Model:
             
         self.target_column = model_json_dict['target']
         
-        # Same restrictions as in Akur8
-        if self.loss_type == "TWEEDIE" and self.tweedie_p <= 1 or self.tweedie_p >= 2:
-            raise NotImplementedError(
-                f"Tweedie is only implemented for 1<p<2 (Poisson-Gamma series), got p={self.tweedie_p}."
-            )
+        # TWEEDIE checks on parameter p
+        if self.loss_type == "TWEEDIE" :
+            # Same restrictions as in Akur8
+            if self.tweedie_p <= 1 or self.tweedie_p >= 2:
+                raise NotImplementedError(f"Tweedie is only implemented for 1<p<2 (Poisson-Gamma series), got p={self.tweedie_p}.")
+            
+            if self.tweedie_p is None:
+                self.tweedie_p = 1.5
+                warnings.warn(f"Parameter 'tweedie_p' was not specified. Setting tweedie_p = 1.5 (Akur8's default value)")
 
         # Parse JSON to flat tables
         self.__simple_pandas_luts = self.__parse_simple_df(model_json_dict)   # var, mod, coef

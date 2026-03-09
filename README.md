@@ -42,7 +42,7 @@ add every column used by the model to get the training dataframe + predictions.
 
 ## Model initialization details
 
-`Akur8Model(model_json, train_df=None, model_name=None, interpolate=True, compress_look_up_tables=True)`
+`Akur8Model(model_json, train_df=None, force_to_categorical=None, model_name=None, interpolate=True, compress_look_up_tables=True, tweedie_p=1.5)`
 
 - `model_name`: if set, it overrides `model_json["projectName"]` for all output column prefixes.
   If `None`, the JSON project name is used. Example output columns:
@@ -62,6 +62,17 @@ add every column used by the model to get the training dataframe + predictions.
   `linear` and `pchip` are available at scoring time.
 - `compress_look_up_tables`: removes flat beta plateaus to speed up lookup
   without changing results.
+- `tweedie_p`: Tweedie power parameter used when `lossType` is `TWEEDIE`.
+  Default value is `1.5` (as in Akur8). A warning is displayed if `lossType` is `TWEEDIE` and if
+  the parameter is not set by the user. Raises an exception if p <=1 or p >=2.
+
+During initialization, the model also estimates a GLM dispersion parameter
+(`model.dispersion_parameter`) from `train_df` and the target column in the
+JSON, according to `lossType`:
+- `POISSON`: fixed to `1.0`.
+- `NEGATIVEBINOMIAL`: method-of-moments estimate.
+- `GAUSSIAN`, `GAMMA`, `INVERSEGAUSSIAN`, `TWEEDIE`: Pearson-style estimate
+  using the family variance function.
 
 ## Pickle helpers
 
@@ -111,3 +122,44 @@ Notes:
   when it is numeric; for categorical x categorical pairs, the method is ignored.
 - If train_df is not provided to Akur8Model, only the `nearest` interpolation method
   ensures to reproduce Akur8 predictions.
+
+## Prediction variance
+
+`predict` can optionally return a per-row variance column:
+
+```python
+scored = model.predict(
+    df,
+    include_coefs=False,
+    include_variance=True,
+    variance_with_dispersion=True,
+)
+```
+
+Added options:
+- `include_variance`: adds `my_model::variance`.
+- `variance_with_dispersion`: when `True`, applies dispersion scaling where relevant.
+
+## Predictive CDF at a point
+
+`predict_cdf` computes `P(Y <= x)` for each row:
+
+```python
+# Same threshold for all rows
+cdf_df = model.predict_cdf(df, point=100.0)
+
+# Row-specific threshold from a column
+cdf_df = model.predict_cdf(df, point="threshold_col")
+```
+
+Output includes:
+- `my_model::prediction`
+- `my_model::variance` (recomputed with dispersion)
+- `my_model::cdf`
+
+For Tweedie: `1 < p < 2`: CDF computed with the Poisson-Gamma mixture series
+  (numerically truncated).
+
+Extra options for Tweedie series:
+- `tweedie_series_tol`: tail tolerance used for truncation.
+- `tweedie_series_max_terms`: hard cap on number of terms.
